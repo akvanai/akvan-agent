@@ -1,0 +1,10 @@
+* { box-sizing: border-box; }
+html, body { width: 100%; height: 100%; margin: 0; }
+body { font-family: Georgia, serif; color: #26221e; background: #f2eadc; }
+.banner { position: relative; width: 100%; height: 100%; padding: 76px 94px; display: flex; flex-direction: column; justify-content: center; background: linear-gradient(145deg, #f7f0e4, #e7dac4); }
+.banner::after { content: ""; position: absolute; inset: 30px; border: 1px solid #b6a58c; pointer-events: none; }
+.quote-mark { position: absolute; top: 34px; left: 74px; color: #9c7557; font-size: 150px; line-height: 1; }
+blockquote { position: relative; z-index: 1; margin: 25px 0 48px; max-width: 980px; font-size: 59px; line-height: 1.13; letter-spacing: -.03em; }
+footer { display: flex; align-items: baseline; gap: 24px; font-family: Inter, Arial, sans-serif; }
+footer strong { font-size: 22px; }
+footer span { color: #806f5f; font-size: 18px; }

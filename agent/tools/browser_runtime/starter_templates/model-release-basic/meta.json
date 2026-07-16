@@ -1,0 +1,21 @@
+{
+  "id": "model-release-basic",
+  "name": "Model Release",
+  "description": "A structured release card for AI models and providers.",
+  "width": 1200,
+  "height": 675,
+  "fields": [
+    {"name": "provider", "type": "text", "required": true},
+    {"name": "model", "type": "text", "required": true},
+    {"name": "title", "type": "text", "required": true},
+    {"name": "context", "type": "text", "required": false},
+    {"name": "price", "type": "text", "required": false}
+  ],
+  "sample_data": {
+    "provider": "AKVAN LABS",
+    "model": "Aurora 4",
+    "title": "A faster reasoning model for everyday work",
+    "context": "Available today in the model selector",
+    "price": "$0.80 / 1M tokens"
+  }
+}

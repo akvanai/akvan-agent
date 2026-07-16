@@ -1,0 +1,50 @@
+use_default_settings: true
+
+general:
+  debug: false
+  enable_metrics: true
+
+server:
+  port: 8080
+  bind_address: 0.0.0.0
+  limiter: false
+
+search:
+  safe_search: 1
+  autocomplete: duckduckgo
+  default_lang: en
+  formats:
+    - html
+    - json
+  max_results: 20
+  timeout: 6.0
+  favicon_resolver: "duckduckgo"
+
+result_cache:
+  expire: 3600
+  enable_http_content: true
+
+valkey:
+  url: false
+
+ui:
+  default_theme: simple
+  query_in_title: true
+  static_use_hash: true
+
+engines:
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+    timeout: 2.0
+    max_results: 20
+  - name: brave
+    engine: brave
+    shortcut: brv
+    timeout: 2.5
+    max_results: 20
+  - name: wikidata
+    engine: wikidata
+    shortcut: wd
+    timeout: 2.0
+    max_results: 10

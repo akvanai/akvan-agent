@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+.env
+.env.*
+!.env.example
+dist/
+build/
+*.egg-info/
+
+# Local planning and investigation notes
+/tmp/
+
+# Generated Akvan banner/image previews
+/akvan-preview*.png

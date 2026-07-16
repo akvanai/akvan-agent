@@ -1,0 +1,19 @@
+{
+  "id": "announcement-basic",
+  "name": "Announcement",
+  "description": "A bold announcement card for product or company updates.",
+  "width": 1200,
+  "height": 675,
+  "fields": [
+    {"name": "badge", "type": "text", "required": false, "default": "ANNOUNCEMENT"},
+    {"name": "title", "type": "text", "required": true},
+    {"name": "subtitle", "type": "text", "required": true},
+    {"name": "body", "type": "text", "required": false}
+  ],
+  "sample_data": {
+    "badge": "NEW RELEASE",
+    "title": "Build once. Reuse everywhere.",
+    "subtitle": "A reusable HTML and CSS banner system",
+    "body": "Designed in Akvan and rendered with Playwright."
+  }
+}

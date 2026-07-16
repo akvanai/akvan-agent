@@ -1,0 +1,85 @@
+# Example ~/.akvan/config.yaml
+# Copy to ~/.akvan/config.yaml and adjust as needed.
+
+memory:
+  memory_enabled: true          # Agent notes in MEMORY.md
+  user_profile_enabled: true    # User profile in USER.md
+  memory_char_limit: 2200       # ~800 tokens for MEMORY.md
+  user_char_limit: 1375         # ~500 tokens for USER.md
+  nudge_interval: 10            # background memory review every N user turns; 0 = off
+
+skills:
+  creation_nudge_interval: 10   # background skill review every N tool iterations; 0 = off
+
+# Context-window protection. Defaults are conservative and model-aware.
+context:
+  enabled: true
+  # context_length: 128000      # optional explicit model context override
+  max_output_tokens: 8192
+  compression:
+    enabled: true
+    threshold: 0.50             # compact before requests exceed 50% of input capacity
+    protect_first_messages: 3
+    protect_recent_ratio: 0.20
+    summary_max_chars: 24000
+  tool_results:
+    persist_oversized: true     # save large outputs privately and inject a preview
+    max_result_chars: 100000
+    max_turn_chars: 200000
+    preview_chars: 1500
+    retention_days: 7
+  tool_search:
+    enabled: auto               # auto | on | off
+    schema_threshold: 0.10      # defer schemas when they use >=10% of context
+  skills:
+    warn_main_chars: 50000
+    warn_file_count: 50
+    warn_total_bytes: 1048576
+
+knowledge:
+  enabled: true                 # Private global OKF knowledge under ~/.akvan/knowledge
+  review_interval: 15           # dedicated curator every N persisted user turns; 0 = off
+  auto_save_explicit_facts: true # clear safe user statements may save automatically
+  max_concept_chars: 20000      # maximum size of one knowledge concept
+
+curator:
+  archive_after_days: 90        # Archive idle agent-created skills
+  auto_archive: false           # Run archive pass automatically on install (future)
+
+display:
+  review_notifications: on      # off | on | verbose — notice after background saves
+  memory_notifications: on      # alias for review_notifications
+
+logging:
+  level: INFO                   # DEBUG for troubleshooting
+  max_size_mb: 5                # Rotate agent/gateway logs at this size
+  backup_count: 3               # Number of rotated backups to keep
+  console: false                # Also log to stderr
+
+# Web tools (optional — also configurable via ~/.akvan/.env)
+# web:
+#   search_backend: searxng     # searxng | ddgs
+#   extract_backend: content_extractor
+#   searxng:
+#     mode: managed             # managed | external
+#     host: 127.0.0.1
+#     port: 8090
+
+# Browser-backed tools (optional — configured via akvan tools)
+# browser_runtime:
+#   enabled: true
+#   mode: docker             # local | docker
+#   host: 127.0.0.1
+#   port: 49733
+#
+# banner_generation:
+#   enabled: true
+#   root_dir: ~/.akvan/banners  # contains templates/, renders/, and assets/
+#   default_template: announcement-basic
+#   default_size: x_landscape # x_landscape | square | story
+#
+# x_account:
+#   enabled: true
+#   auth_state_path: ~/.akvan/x/auth.json
+#   post_confirmation: always
+#   default_fetch_limit: 10

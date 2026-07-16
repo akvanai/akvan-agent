@@ -1,0 +1,17 @@
+{
+  "id": "quote-basic",
+  "name": "Quote",
+  "description": "A calm editorial quote card with attribution.",
+  "width": 1200,
+  "height": 675,
+  "fields": [
+    {"name": "quote", "type": "text", "required": true},
+    {"name": "author", "type": "text", "required": true},
+    {"name": "source", "type": "text", "required": false}
+  ],
+  "sample_data": {
+    "quote": "Good tools make the right workflow feel inevitable.",
+    "author": "Akvan Studio",
+    "source": "Design principles"
+  }
+}
