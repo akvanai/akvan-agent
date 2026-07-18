@@ -13,6 +13,25 @@ from typing import Any
 from urllib.parse import quote
 
 
+def _load_banner_renderer():
+    """Load banner_renderer without importing agent.tools package deps.
+
+    Docker runs this file as a script inside a slim Playwright image. Importing
+    `agent.tools...` would pull approval/config/dotenv and fail. Load the sibling
+    module by path instead.
+    """
+
+    import importlib.util
+
+    path = Path(__file__).resolve().parent / "banner_renderer.py"
+    spec = importlib.util.spec_from_file_location("akvan_banner_renderer", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load banner renderer from {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.render_banner_payload
+
+
 class RuntimeHandler(BaseHTTPRequestHandler):
     auth_state_path: Path | None = None
     runtime_name = "akvan-runtime"
@@ -45,9 +64,8 @@ class RuntimeHandler(BaseHTTPRequestHandler):
         self._send_json(404, {"ok": False, "error": "not_found"})
 
     def _handle_banner_render(self, payload: dict[str, Any]) -> None:
-        from agent.tools.browser_runtime.banner_renderer import render_banner_payload
-
         try:
+            render_banner_payload = _load_banner_renderer()
             result = render_banner_payload(payload)
         except ValueError as exc:
             self._send_json(400, {"ok": False, "error": "invalid_banner", "message": str(exc)})
@@ -187,37 +205,127 @@ def _headless_default() -> bool:
 
 
 def _fill_post_text(page: Any, text: str, timeout_error: type[Exception]) -> None:
+    """Ensure composer text is set once.
+
+    Navigating to x.com/intent/tweet?text=... already hydrates the draft. Calling
+    fills() on top of that can duplicate the caption, exceed X's limit, and leave
+    the Post button permanently aria-disabled.
+    """
+
     selectors = ["[data-testid='tweetTextarea_0']", "div[role='textbox']"]
+    locator = None
     for selector in selectors:
         try:
-            locator = page.locator(selector).first
-            locator.wait_for(timeout=5000)
-            current = locator.inner_text(timeout=1000).strip()
-            if current != text:
-                locator.fill(text)
-            return
+            candidate = page.locator(selector).first
+            candidate.wait_for(timeout=10000)
+            locator = candidate
+            break
         except timeout_error:
             continue
         except Exception:
             continue
+    if locator is None:
+        return
+
+    # Wait for intent-URL hydration before deciding whether to type.
+    try:
+        page.wait_for_function(
+            """() => {
+                const el = document.querySelector("[data-testid='tweetTextarea_0'], div[role='textbox']");
+                return !!(el && (el.innerText || '').trim().length > 0);
+            }""",
+            timeout=10000,
+        )
+    except Exception:
+        pass
+
+    try:
+        current = locator.inner_text(timeout=2000).strip()
+    except Exception:
+        current = ""
+
+    if current:
+        # Intent URL already populated the composer; rewriting duplicates text.
+        return
+
+    try:
+        locator.fill(text)
+    except Exception:
+        try:
+            locator.click()
+            page.keyboard.press("Control+A")
+            page.keyboard.press("Backspace")
+            locator.fill(text)
+        except Exception:
+            return
+
+
+def _resolve_media_path(media_path: str) -> Path:
+    """Resolve media paths for host and Docker-mounted runtimes."""
+
+    path = Path(media_path).expanduser()
+    if path.is_file():
+        return path
+    # Docker browser runtime mounts the project at /app.
+    mounted_root = Path("/app")
+    candidates = [mounted_root / path.name]
+    parts = path.parts
+    if "akvan-agent" in parts:
+        idx = parts.index("akvan-agent")
+        candidates.append(mounted_root.joinpath(*parts[idx + 1 :]))
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return path
 
 
 def _attach_media(page: Any, media_path: str) -> None:
-    path = Path(media_path).expanduser()
+    path = _resolve_media_path(media_path)
     if not path.is_file():
-        raise RuntimeError(f"Media file not found: {path}")
-    page.locator("input[type='file']").first.set_input_files(str(path))
-    time.sleep(1)
+        raise RuntimeError(f"Media file not found: {media_path}")
+
+    # Prefer X's compose file input; a generic input[type=file] can accept files
+    # without attaching a preview to the tweet draft.
+    file_input = page.locator("input[data-testid='fileInput']").first
+    try:
+        file_input.wait_for(state="attached", timeout=15000)
+    except Exception:
+        file_input = page.locator("input[type='file']").first
+
+    file_input.set_input_files(str(path))
+
+    # Wait for an actual media preview — Post can already be enabled from text alone.
+    preview = page.locator(
+        "[data-testid='attachments'], img[src*='blob:'], [aria-label*='Remove media'], [aria-label*='Remove']"
+    )
+    try:
+        preview.first.wait_for(state="visible", timeout=30000)
+    except Exception as exc:
+        raise RuntimeError(
+            "Media file was selected but X did not show an image preview. "
+            "The post would have been text-only."
+        ) from exc
 
 
 def _click_post(page: Any, timeout_error: type[Exception]) -> None:
     selectors = ["[data-testid='tweetButton']", "[data-testid='tweetButtonInline']"]
     for selector in selectors:
         try:
-            button = page.locator(selector).first
-            button.wait_for(timeout=10000)
-            button.click(timeout=10000)
-            return
+            # Wait for this Post control to become enabled (media upload can disable it).
+            enabled = page.locator(f"{selector}:not([aria-disabled='true'])")
+            try:
+                enabled.first.wait_for(state="visible", timeout=15000)
+            except Exception:
+                continue
+            button = enabled.first
+            try:
+                button.click(timeout=5000)
+                return
+            except Exception:
+                # Media compose overlays often intercept pointer events even when
+                # the Post button reports enabled=true.
+                button.click(timeout=10000, force=True)
+                return
         except timeout_error:
             continue
         except Exception:

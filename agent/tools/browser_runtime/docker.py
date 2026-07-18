@@ -68,6 +68,8 @@ def ensure_docker_runtime(*, config: dict[str, Any], project_root: Path | None =
         "-w",
         "/app",
         "-e",
+        "PYTHONPATH=/app",
+        "-e",
         f"AKVAN_X_AUTH_STATE_PATH={auth_target}",
         "-e",
         "AKVAN_BROWSER_RUNTIME_NAME=akvan-docker",

@@ -37,10 +37,21 @@ def render_banner_payload(payload: dict[str, Any]) -> dict[str, Any]:
             device_scale_factor=1,
         )
         page = context.new_page()
-        page.route("**/*", lambda route: route.abort())
+        # Block network fetches while still allowing set_content's about:/data: documents.
+        def _handle_route(route: Any) -> None:
+            url = route.request.url
+            if url.startswith(("about:", "data:")):
+                route.continue_()
+            else:
+                route.abort()
+
+        page.route("**/*", _handle_route)
         try:
-            page.set_content(html, wait_until="domcontentloaded")
-            page.add_style_tag(content=css)
+            # Embed CSS in the document. add_style_tag() hangs when routes abort network.
+            page.set_content(
+                f"<style>{css}</style>{html}",
+                wait_until="domcontentloaded",
+            )
             page.wait_for_timeout(100)
             png = page.screenshot(
                 type="png",

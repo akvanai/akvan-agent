@@ -229,6 +229,7 @@ def test_docker_runtime_lifecycle_uses_configured_port(monkeypatch, tmp_path: Pa
     command = commands[0]
     assert command[:3] == ["docker", "run", "-d"]
     assert "127.0.0.1:49992:49992" in command
+    assert "PYTHONPATH=/app" in command
     assert "/app/agent/tools/browser_runtime/server.py" in command
     assert f"AKVAN_X_AUTH_STATE_PATH=/akvan-auth/{auth.name}" in command
 
