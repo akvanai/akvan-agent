@@ -72,14 +72,16 @@ logging:
 #   host: 127.0.0.1
 #   port: 49733
 #
+# browser:
+#   enabled: true            # agent browser_* tools (requires browser_runtime)
+#   inactivity_timeout_seconds: 900
+#   profiles_dir: ~/.akvan/browser/profiles  # named Playwright storage_state profiles
+#
 # banner_generation:
 #   enabled: true
 #   root_dir: ~/.akvan/banners  # contains templates/, renders/, and assets/
 #   default_template: announcement-basic
 #   default_size: x_landscape # x_landscape | square | story
 #
-# x_account:
-#   enabled: true
-#   auth_state_path: ~/.akvan/x/auth.json
-#   post_confirmation: always
-#   default_fetch_limit: 10
+# vault:
+#   root_dir: ~/.akvan/vault  # agent media/files only; not for secrets

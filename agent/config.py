@@ -193,7 +193,7 @@ def resolve_enabled_toolsets(
     from agent.knowledge.config import is_knowledge_enabled
     from agent.tools.browser_runtime.config import (
         is_banner_generation_configured,
-        is_x_account_configured,
+        is_browser_configured,
     )
     from agent.tools.web.config import is_web_configured
     from agent.tools.telegram_delivery import is_telegram_delivery_configured
@@ -212,8 +212,8 @@ def resolve_enabled_toolsets(
         and "banner_generation" not in toolsets
     ):
         toolsets.append("banner_generation")
-    if is_x_account_configured(project_root=project_root) and "x_account" not in toolsets:
-        toolsets.append("x_account")
+    if is_browser_configured(project_root=project_root) and "browser" not in toolsets:
+        toolsets.append("browser")
     if (
         is_telegram_delivery_configured(project_root=project_root)
         and "telegram_delivery" not in toolsets

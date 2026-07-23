@@ -16,12 +16,17 @@ from agent.skills.paths import (
 )
 from agent.skills.registry import SKILL_NAME_PATTERN, _split_frontmatter
 
+# Bundled skills removed from the product that should be deleted from ~/.akvan/skills
+# even if an older sync already dropped them from the manifest without deleting files.
+RETIRED_BUNDLED_SKILLS = frozenset({"x-account"})
+
 @dataclass(frozen=True)
 class SyncSummary:
     added: tuple[str, ...] = ()
     updated: tuple[str, ...] = ()
     skipped: tuple[str, ...] = ()
     unchanged: tuple[str, ...] = ()
+    removed: tuple[str, ...] = ()
     removed_manifest: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, list[str]]:
@@ -30,6 +35,7 @@ class SyncSummary:
             "updated": list(self.updated),
             "skipped": list(self.skipped),
             "unchanged": list(self.unchanged),
+            "removed": list(self.removed),
             "removed_manifest": list(self.removed_manifest),
         }
 
@@ -49,6 +55,7 @@ def sync_bundled_skills(*, quiet: bool = False) -> SyncSummary:
     updated: list[str] = []
     skipped: list[str] = []
     unchanged: list[str] = []
+    removed: list[str] = []
     removed_manifest: list[str] = []
     next_manifest: dict[str, str] = {}
 
@@ -85,8 +92,34 @@ def sync_bundled_skills(*, quiet: bool = False) -> SyncSummary:
         added.append(skill_name)
         next_manifest[skill_name] = bundled_hash
 
-    for name in manifest:
-        if name not in discovered_names:
+    for name in sorted(manifest):
+        if name in discovered_names:
+            continue
+        removed_manifest.append(name)
+        dest = _find_user_skill_dir(target_dir, name)
+        if dest is None:
+            continue
+        recorded_hash = manifest.get(name)
+        current_hash = _dir_hash(dest)
+        # Only delete unmodified copies that still match the last synced bundled hash.
+        if recorded_hash and current_hash == recorded_hash:
+            shutil.rmtree(dest)
+            _cleanup_empty_parents(dest.parent, stop_at=target_dir)
+            removed.append(name)
+        else:
+            skipped.append(name)
+
+    for name in sorted(RETIRED_BUNDLED_SKILLS):
+        if name in discovered_names or name in removed:
+            continue
+        dest = _find_user_skill_dir(target_dir, name)
+        if dest is None:
+            continue
+        shutil.rmtree(dest)
+        _cleanup_empty_parents(dest.parent, stop_at=target_dir)
+        if name not in removed:
+            removed.append(name)
+        if name not in removed_manifest:
             removed_manifest.append(name)
 
     _write_manifest(manifest_path, next_manifest)
@@ -95,20 +128,58 @@ def sync_bundled_skills(*, quiet: bool = False) -> SyncSummary:
         updated=tuple(updated),
         skipped=tuple(skipped),
         unchanged=tuple(unchanged),
+        removed=tuple(removed),
         removed_manifest=tuple(removed_manifest),
     )
     if not quiet:
         _print_summary(summary, bundled_dir=bundled_dir, target_dir=target_dir)
-    if summary.added or summary.updated or summary.skipped:
+    if summary.added or summary.updated or summary.skipped or summary.removed:
         log_skill(
             "sync",
             "bundled",
             (
                 f"added={len(summary.added)} updated={len(summary.updated)} "
-                f"skipped={len(summary.skipped)}"
+                f"skipped={len(summary.skipped)} removed={len(summary.removed)}"
             ),
         )
     return summary
+
+
+def _find_user_skill_dir(target_dir: Path, name: str) -> Path | None:
+    """Locate a synced skill directory by frontmatter/name under the user skills root."""
+
+    if not target_dir.is_dir():
+        return None
+    for skill_md in target_dir.rglob("SKILL.md"):
+        rel = skill_md.relative_to(target_dir)
+        if len(rel.parts) != 3:
+            continue
+        if _read_skill_name(skill_md) == name:
+            return skill_md.parent
+    return None
+
+
+def _cleanup_empty_parents(path: Path, *, stop_at: Path) -> None:
+    current = path
+    stop = stop_at.resolve()
+    while True:
+        try:
+            resolved = current.resolve()
+        except OSError:
+            break
+        try:
+            resolved.relative_to(stop)
+        except ValueError:
+            break
+        if resolved == stop:
+            break
+        try:
+            if any(current.iterdir()):
+                break
+            current.rmdir()
+        except OSError:
+            break
+        current = current.parent
 
 
 def _discover_bundled_skills(bundled_dir: Path) -> list[tuple[str, Path]]:
@@ -175,6 +246,8 @@ def _print_summary(
         print(f"Added: {', '.join(summary.added)}")
     if summary.updated:
         print(f"Updated: {', '.join(summary.updated)}")
+    if summary.removed:
+        print(f"Removed (obsolete bundled): {', '.join(summary.removed)}")
     if summary.skipped:
         print(f"Skipped (customized or deleted): {', '.join(summary.skipped)}")
     if summary.unchanged:
@@ -183,6 +256,7 @@ def _print_summary(
         (
             summary.added,
             summary.updated,
+            summary.removed,
             summary.skipped,
             summary.unchanged,
         )

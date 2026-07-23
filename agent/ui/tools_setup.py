@@ -16,13 +16,26 @@ from agent.tools.browser_runtime.config import (
     DEFAULT_RUNTIME_MODE,
     DEFAULT_RUNTIME_PORT,
     banner_generation_config,
+    browser_config,
     browser_runtime_config,
     is_banner_generation_configured,
+    is_browser_configured,
     is_browser_runtime_configured,
     is_docker_browser_runtime,
-    is_x_account_configured,
+    profiles_dir,
     save_browser_tools_yaml,
-    x_account_config,
+)
+from agent.tools.browser_runtime.profiles import (
+    InteractiveLoginSession,
+    ProfileError,
+    delete_profile,
+    display_available,
+    ensure_profiles_ready,
+    import_storage_state,
+    list_profiles,
+    migrate_legacy_x_auth,
+    profile_status,
+    validate_profile_name,
 )
 from agent.tools.web.config import (
     get_extract_backend,
@@ -550,8 +563,12 @@ def _teardown_docker_browser_runtime_if_active(*, show_progress: bool = True) ->
         return
 
 
-def _browser_status() -> str:
+def _browser_runtime_status() -> str:
     return "active" if is_browser_runtime_configured() else "inactive"
+
+
+def _browser_status() -> str:
+    return "active" if is_browser_configured() else "inactive"
 
 
 def _banner_status() -> str:
@@ -566,16 +583,28 @@ def _telegram_delivery_status() -> str:
     return "configured (via gateway)"
 
 
-def _x_status() -> str:
-    return "active" if is_x_account_configured() else "inactive"
-
-
 def _browser_menu_items() -> list[tuple[str, str]]:
+    profiles = list_profiles()
+    ready = sum(1 for item in profiles if item.get("ready"))
     return _menu_with_footer(
         [
             (
+                "browser",
+                (
+                    f"Browser  {_browser_status()}  "
+                    "navigate, snapshot, click with auth profiles"
+                ),
+            ),
+            (
+                "profiles",
+                f"Auth profiles  {ready}/{len(profiles)} ready  import or interactive login",
+            ),
+            (
                 "runtime",
-                f"Browser runtime  {_browser_status()}  shared Playwright/Chromium runtime",
+                (
+                    f"Runtime  {_browser_runtime_status()}  "
+                    "how Chromium runs (shared with banners)"
+                ),
             ),
         ],
         ("back", "Back  return to tools menu"),
@@ -585,10 +614,6 @@ def _browser_menu_items() -> list[tuple[str, str]]:
 def _social_menu_items() -> list[tuple[str, str]]:
     return _menu_with_footer(
         [
-            (
-                "x",
-                f"X account  {_x_status()}  auth status, profile fetch, posting",
-            ),
             (
                 "telegram_delivery",
                 (
@@ -785,59 +810,302 @@ def _configure_telegram_delivery() -> int:
     return 0
 
 
-def _configure_x_account() -> int:
+def _configure_browser() -> int:
     if not is_browser_runtime_configured():
         result = _configure_browser_runtime()
         if result == 2 or not is_browser_runtime_configured():
             return result
-    current = x_account_config()
-    auth_path = run_full_screen_input(
-        title="X account",
-        prompt="Playwright storage state path",
-        default=str(current["auth_state_path"]),
+    ensure_profiles_ready()
+    migrated = migrate_legacy_x_auth()
+    current = browser_config()
+    choice = run_full_screen_selector(
+        title="Browser",
+        subtitle="Enable agent browser tools with optional auth profiles",
+        items=_menu_with_footer(
+            [
+                ("enable", "Enable  register browser_* tools"),
+                ("disable", "Disable  hide browser_* tools (runtime can stay on for banners)"),
+            ],
+            ("back", "Back"),
+        ),
+        default="enable" if current["enabled"] else "disable",
     )
-    if auth_path is None:
-        return 1
-    auth_file = auth_path.strip()
-    if not auth_file:
-        run_full_screen_message(title="Auth path required", text="X auth requires an auth.json path.")
-        return 2
-    if not Path(auth_file).expanduser().is_file():
-        run_full_screen_message(
-            title="Auth file not found",
-            text=(
-                "Create a Playwright storage state for the X account first.\n"
-                "Recommended private path: ~/.akvan/x/auth.json\n"
-                "This file must never be committed."
-            ),
-        )
-        return 2
+    if choice is None or choice == "back":
+        return 0 if choice == "back" else 1
+    enabled = choice == "enable"
     path = save_browser_tools_yaml(
-        x_account={
-            "enabled": True,
-            "auth_state_path": auth_file,
-            "post_confirmation": "always",
-            "default_fetch_limit": int(current["default_fetch_limit"]),
+        browser={
+            "enabled": enabled,
+            "inactivity_timeout_seconds": int(current["inactivity_timeout_seconds"]),
+            "profiles_dir": str(profiles_dir()),
         }
     )
+    note = ""
+    if migrated:
+        note = f"\nMigrated legacy X auth into profile {migrated['name']!r}."
     run_full_screen_message(
-        title="X account saved",
-        text=f"X account automation is enabled. Posting still requires confirmation.\nConfig file {path}",
+        title="Browser saved",
+        text=(
+            f"Browser is {'enabled' if enabled else 'disabled'}.\n"
+            f"Config file  {path}"
+            f"{note}\n\n"
+            "Add auth profiles under Browser → Auth profiles. "
+            "On VPS/headless hosts, import a Playwright storage state file."
+        ),
     )
     return 0
+
+
+def _profiles_menu_items() -> list[tuple[str, str]]:
+    ensure_profiles_ready()
+    items: list[tuple[str, str]] = [
+        ("add", "Add profile  import file or interactive login"),
+        ("list", "List profiles  show ready status"),
+    ]
+    for profile in list_profiles():
+        name = str(profile["name"])
+        ready = "ready" if profile.get("ready") else "missing"
+        items.append((f"manage:{name}", f"{name}  {ready}  re-import or delete"))
+    return _menu_with_footer(items, ("back", "Back"))
+
+
+def _add_auth_profile() -> int:
+    ensure_profiles_ready()
+    name = run_full_screen_input(
+        title="Add auth profile",
+        prompt="Profile name (e.g. x, github)",
+        default="",
+    )
+    if name is None:
+        return 1
+    try:
+        profile = validate_profile_name(name)
+    except ProfileError as exc:
+        run_full_screen_message(title="Invalid name", text=str(exc))
+        return 2
+
+    method_items = [
+        ("import", "Import storage state file  recommended for VPS and X"),
+    ]
+    if display_available():
+        method_items.append(
+            ("login", "Interactive login  local GUI only (headed Chromium)")
+        )
+    else:
+        method_items.append(
+            (
+                "login_unavailable",
+                "Interactive login unavailable  no display (use import / scp from desktop)",
+            )
+        )
+    method = run_full_screen_selector(
+        title=f"Profile {profile}",
+        subtitle="How do you want to provide auth?",
+        items=_menu_with_footer(method_items, ("back", "Back")),
+        default="import",
+    )
+    if method is None or method == "back":
+        return 0 if method == "back" else 1
+    if method == "login_unavailable":
+        run_full_screen_message(
+            title="Use import on this host",
+            text=(
+                "This host looks headless (VPS/SSH).\n"
+                "Log in on a desktop browser, export a Playwright storage_state JSON, "
+                f"copy it here, then import it as profile {profile!r}."
+            ),
+        )
+        return 0
+    if method == "import":
+        return _import_auth_profile(profile)
+    return _interactive_auth_profile(profile)
+
+
+def _import_auth_profile(profile: str) -> int:
+    path_text = run_full_screen_input(
+        title=f"Import profile {profile}",
+        prompt="Path to Playwright storage_state JSON",
+        default="",
+    )
+    if path_text is None:
+        return 1
+    if not path_text.strip():
+        run_full_screen_message(title="Path required", text="Provide a storage state file path.")
+        return 2
+    start_url = run_full_screen_input(
+        title=f"Import profile {profile}",
+        prompt="Optional start URL hint (e.g. https://x.com)",
+        default="",
+    )
+    if start_url is None:
+        return 1
+    try:
+        result = import_storage_state(
+            profile,
+            path_text.strip(),
+            source="import",
+            start_url=start_url.strip() or None,
+        )
+    except ProfileError as exc:
+        run_full_screen_message(title="Import failed", text=str(exc))
+        return 2
+    run_full_screen_message(
+        title="Profile saved",
+        text=(
+            f"Profile {result['name']!r} is ready.\n"
+            f"Managed path  {result['storage_state_path']}\n\n"
+            "Enable Browser if you have not already, then ask the agent "
+            f"to browser_start(profile={result['name']!r})."
+        ),
+    )
+    return 0
+
+
+def _interactive_auth_profile(profile: str) -> int:
+    start_url = run_full_screen_input(
+        title=f"Login for profile {profile}",
+        prompt="Start URL (optional)",
+        default="https://x.com/login",
+    )
+    if start_url is None:
+        return 1
+    session = InteractiveLoginSession(profile, start_url=start_url.strip() or None)
+    try:
+        session.open()
+    except ProfileError as exc:
+        run_full_screen_message(title="Login failed", text=str(exc))
+        return 2
+    run_full_screen_message(
+        title="Complete login in the browser",
+        text=(
+            "A headed Chromium window should be open.\n"
+            "Log in to the site, then press Enter here to save the session.\n"
+            "Sites like X may block automated browsers — prefer Import in that case."
+        ),
+    )
+    confirm = run_full_screen_selector(
+        title=f"Save profile {profile}?",
+        subtitle="Save storage state after you finished logging in",
+        items=_menu_with_footer(
+            [
+                ("save", "Save and close browser"),
+                ("cancel", "Cancel without saving"),
+            ],
+            ("back", "Cancel"),
+        ),
+        default="save",
+    )
+    if confirm != "save":
+        session.close()
+        return 0
+    try:
+        result = session.save_and_close()
+    except ProfileError as exc:
+        session.close()
+        run_full_screen_message(title="Save failed", text=str(exc))
+        return 2
+    run_full_screen_message(
+        title="Profile saved",
+        text=f"Profile {result['name']!r} is ready.\nPath  {result['storage_state_path']}",
+    )
+    return 0
+
+
+def _manage_auth_profile(profile: str) -> int:
+    status = profile_status(profile)
+    choice = run_full_screen_selector(
+        title=f"Profile {profile}",
+        subtitle="ready" if status.get("ready") else "missing storage state",
+        items=_menu_with_footer(
+            [
+                ("reimport", "Replace storage state  import file"),
+                ("delete", "Delete profile"),
+            ],
+            ("back", "Back"),
+        ),
+        default="reimport",
+    )
+    if choice is None or choice == "back":
+        return 0 if choice == "back" else 1
+    if choice == "reimport":
+        return _import_auth_profile(profile)
+    confirm = run_full_screen_selector(
+        title=f"Delete profile {profile}?",
+        subtitle="This removes the managed storage state",
+        items=_menu_with_footer(
+            [("yes", "Yes, delete"), ("no", "No, keep")],
+            ("back", "Back"),
+        ),
+        default="no",
+    )
+    if confirm != "yes":
+        return 0
+    delete_profile(profile)
+    run_full_screen_message(title="Deleted", text=f"Profile {profile!r} was removed.")
+    return 0
+
+
+def _run_auth_profiles_setup() -> int:
+    ensure_profiles_ready()
+    migrated = migrate_legacy_x_auth()
+    if migrated:
+        run_full_screen_message(
+            title="Legacy X auth migrated",
+            text=(
+                f"Found legacy X auth and imported it as profile {migrated['name']!r}.\n"
+                f"Path  {migrated['storage_state_path']}"
+            ),
+        )
+    while True:
+        choice = run_full_screen_selector(
+            title="Auth profiles",
+            subtitle=f"Managed under {profiles_dir()}",
+            items=_profiles_menu_items(),
+            default="add",
+        )
+        if choice is None or choice == "back":
+            return 0
+        if choice == "add":
+            result = _add_auth_profile()
+            if result == 1:
+                return result
+        elif choice == "list":
+            profiles = list_profiles()
+            if not profiles:
+                text = "No profiles yet. Add one with Import (recommended on VPS)."
+            else:
+                lines = []
+                for item in profiles:
+                    source = (item.get("meta") or {}).get("source") or "?"
+                    ready = "ready" if item.get("ready") else "missing"
+                    lines.append(f"- {item['name']}  {ready}  source={source}")
+                text = "\n".join(lines)
+            run_full_screen_message(title="Auth profiles", text=text)
+        elif choice.startswith("manage:"):
+            result = _manage_auth_profile(choice.split(":", 1)[1])
+            if result == 1:
+                return result
 
 
 def _run_browser_tools_setup() -> int:
     while True:
         choice = run_full_screen_selector(
-            title="Browser Tool",
-            subtitle="Configure browser-backed tools",
+            title="Browser",
+            subtitle="Enable browser tools, manage auth profiles, and configure runtime",
             items=_browser_menu_items(),
-            default="runtime",
+            default="browser",
         )
         if choice is None or choice == "back":
             return 0
-        if choice == "runtime":
+        if choice == "browser":
+            result = _configure_browser()
+            if result:
+                return result
+        elif choice == "profiles":
+            result = _run_auth_profiles_setup()
+            if result:
+                return result
+        elif choice == "runtime":
             result = _configure_browser_runtime()
             if result == 2:
                 return result
@@ -847,21 +1115,16 @@ def _run_social_tools_setup() -> int:
     while True:
         choice = run_full_screen_selector(
             title="Social Media",
-            subtitle="Configure social account tools",
+            subtitle="Configure social delivery tools",
             items=_social_menu_items(),
-            default="x",
+            default="telegram_delivery",
         )
         if choice is None or choice == "back":
             return 0
-        if choice == "x":
-            result = _configure_x_account()
-            if result:
-                return result
-        elif choice == "telegram_delivery":
+        if choice == "telegram_delivery":
             result = _configure_telegram_delivery()
             if result:
                 return result
-
 
 def _run_art_tools_setup() -> int:
     while True:
@@ -888,14 +1151,11 @@ def _tools_category_items() -> list[tuple[str, str]]:
             ),
             (
                 "browser",
-                f"🌐 Browser Tool  runtime={_browser_status()}",
+                f"🌐 Browser  browser={_browser_status()}",
             ),
             (
                 "social",
-                (
-                    f"🐦 Social Media  X={_x_status()} "
-                    f"telegram={_telegram_delivery_status()}"
-                ),
+                f"🐦 Social Media  telegram={_telegram_delivery_status()}",
             ),
             (
                 "art",

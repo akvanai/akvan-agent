@@ -42,9 +42,26 @@ RUNTIME_GUIDANCE = """# Runtime Guidance
 - Do not claim a tool or skill was used unless it was actually invoked.
 - Prefer `read_file`, `write_file`, and `patch` for direct code changes.
 - Use `terminal` for commands and tests; use `process` for background jobs.
+- Put generated images, downloads, and other media under the agent vault path from
+  session metadata. Do not write media into the project working directory unless the
+  user asks. Keep secrets and config outside the vault. Managed `banner_*` tools
+  already write under `~/.akvan/banners`.
 - Approval denials are final for that operation; choose a safer approach.
 - Verify code changes with relevant tests before reporting completion.
 - Continue through tool calls until a complete user-facing answer is ready."""
+
+BROWSER_GUIDANCE = """# Browser Tools
+
+- When `browser_*` tools are available, use them for authenticated site work (X, GitHub, etc.).
+- Prefer `browser_list_profiles` / `browser_auth_status`, then `browser_start(profile=...)`,
+  `browser_snapshot`, and click/type by `@eN` refs from the latest snapshot.
+- Attach images/files with `browser_upload(paths=[...])` before submitting forms or posts.
+  Prefer agent vault or `~/.akvan/banners` paths. Optional `ref` clicks a media control first.
+  Re-`browser_snapshot` and confirm a media preview before claiming the file was attached.
+- Never read or expose auth profile / storage_state file contents.
+- Do not drive Playwright/Chromium yourself via `terminal` when `browser_*` tools exist.
+- Do not invent obsolete tools such as `x_post`, `x_fetch_profile`, or `x_auth_status`.
+- Close the session with `browser_close` when finished."""
 
 
 class PromptBuilder:
@@ -97,6 +114,8 @@ class PromptBuilder:
                     sources.append(PromptSource("user-profile", None, user_block))
 
         sources.append(PromptSource("runtime", None, RUNTIME_GUIDANCE))
+        if any(tool.name.startswith("browser_") for tool in tools):
+            sources.append(PromptSource("browser", None, BROWSER_GUIDANCE))
         skills_index = "# Available Skills\n\n" + skills.compact_index()
         sources.append(PromptSource("skills", None, skills_index))
 
@@ -114,12 +133,16 @@ class PromptBuilder:
                     )
                 )
 
+        from agent.vault import ensure_vault, vault_dir
+
+        ensure_vault()
         current = self.now or datetime.now().astimezone()
         metadata = "\n".join(
             (
                 "# Session Metadata",
                 "",
                 f"- Working directory: {self.cwd}",
+                f"- Agent vault: {vault_dir()}",
                 f"- Date: {current.date().isoformat()}",
                 f"- Model: {model}",
                 f"- Provider: {provider}",

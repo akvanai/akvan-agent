@@ -182,6 +182,9 @@ install_akvan() {
     log_step "Installing $PROGRAM into $AKVAN_HOME"
     prepare_python
     log_ok "Python environment ready"
+    # Replacing ~/.akvan/app via mv breaks Docker bind mounts of the old inode.
+    # Drop the managed browser runtime so the next use remounts the new tree.
+    remove_managed_browser_runtime_container
     copy_application
     log_step "Installing Python packages"
     "$UV" pip install \
@@ -202,6 +205,10 @@ install_akvan() {
     log_step "Restarting running gateways"
     AKVAN_HOME="$AKVAN_HOME" "$LAUNCHER" gateway restart --quiet || true
     log_ok "Running gateways restarted"
+
+    # Ensure any leftover runtime from before copy_application is gone after app swap.
+    remove_managed_browser_runtime_container
+    log_ok "Browser runtime container refreshed for new app files"
 
     if [ ! -f "$AKVAN_HOME/.env" ] && [ "${AKVAN_SKIP_SETUP:-0}" != "1" ]; then
         if [ ! -t 0 ] || [ ! -t 1 ]; then

@@ -12,7 +12,7 @@ from agent.skills.tools import build_skill_tools
 from agent.tools.skill_manage_tools import build_skill_manage_tool
 from agent.tools.base import Tool
 from agent.tools.banner_generation import build_banner_generation_tools
-from agent.tools.x_account import build_x_account_tools
+from agent.tools.browser import build_browser_tools
 from agent.tools.file_tools import build_file_tools
 from agent.tools.memory_tools import build_memory_tools
 from agent.tools.knowledge_tools import build_knowledge_tools
@@ -26,7 +26,7 @@ from agent.tools.telegram_delivery import (
 from agent.tools.web.config import is_web_configured
 from agent.tools.browser_runtime.config import (
     is_banner_generation_configured,
-    is_x_account_configured,
+    is_browser_configured,
 )
 
 
@@ -127,10 +127,10 @@ def build_registry(
             build_banner_generation_tools(project_root=project_root),
             toolset="banner_generation",
         )
-    if is_x_account_configured(project_root=project_root):
+    if is_browser_configured(project_root=project_root):
         registry.register_many(
-            build_x_account_tools(project_root=project_root),
-            toolset="x_account",
+            build_browser_tools(project_root=project_root),
+            toolset="browser",
         )
     if is_telegram_delivery_configured(project_root=project_root):
         registry.register_many(

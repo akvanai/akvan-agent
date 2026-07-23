@@ -81,7 +81,10 @@ _DANGEROUS_PATTERNS = tuple(
         (r"\bchmod\s+(?:-[^\s]+\s+)*777\b", "world-writable permissions"),
         (r"\b(?:sudo|su)\b", "privilege escalation"),
         (r"\bkill\s+(?:-[^\s]+\s+)*(?:-1|1)\b", "system-wide or init process termination"),
-        (r"(?:>|>>|\btee\b|\bsed\s+-i\b)[^\n]*(?:/etc/|/\.ssh/|/\.akvan/|\.env\b)", "write to a sensitive path"),
+        (
+            r"(?:>|>>|\btee\b|\bsed\s+-i\b)[^\n]*(?:/etc/|/\.ssh/|/\.akvan/(?!vault(?:/|$))|\.env\b)",
+            "write to a sensitive path",
+        ),
     )
 )
 
@@ -114,7 +117,11 @@ def classify_terminal(command: str, *, workdir: Path, project_root: Path) -> App
 
 
 def classify_file_write(path: Path, *, project_root: Path) -> ApprovalRequirement | None:
+    from agent.vault import is_under_vault
+
     resolved = path.resolve(strict=False)
+    if is_under_vault(resolved):
+        return None
     reasons: list[str] = []
     try:
         relative = resolved.relative_to(project_root.resolve())

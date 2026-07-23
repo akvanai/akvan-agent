@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from agent.prompts import PromptBuilder
+from agent.vault import vault_dir
 
 
 def write_skill(
@@ -20,15 +21,19 @@ def write_skill(
     return skill_root
 
 
-def test_layered_prompt_order_and_project_instruction_precedence(tmp_path: Path) -> None:
+def test_layered_prompt_order_and_project_instruction_precedence(
+    tmp_path: Path, monkeypatch
+) -> None:
     project = tmp_path / "project"
     nested = project / "src"
     home = tmp_path / "home"
     nested.mkdir(parents=True)
     home.mkdir()
     (project / ".git").mkdir()
-    (home / ".akvan").mkdir()
-    (home / ".akvan" / "SOUL.md").write_text("CUSTOM IDENTITY", encoding="utf-8")
+    akvan = home / ".akvan"
+    akvan.mkdir()
+    monkeypatch.setenv("AKVAN_HOME", str(akvan))
+    (akvan / "SOUL.md").write_text("CUSTOM IDENTITY", encoding="utf-8")
     (project / "AGENTS.md").write_text("AGENTS RULE", encoding="utf-8")
     (project / ".akvan.md").write_text("AKVAN RULE", encoding="utf-8")
     write_skill(project, "writing", "writer", "Write clearly", "SECRET FULL BODY")
@@ -50,7 +55,36 @@ def test_layered_prompt_order_and_project_instruction_precedence(tmp_path: Path)
     assert "AGENTS RULE" not in snapshot.content
     assert "SECRET FULL BODY" not in snapshot.content
     assert "writer (writing): Write clearly" in snapshot.content
+    assert f"- Agent vault: {vault_dir()}" in snapshot.content
+    assert "agent vault path from" in snapshot.content
+    assert (akvan / "vault").is_dir()
     assert snapshot.content == builder.build(
         model="model", provider="fake", skills=skills, tools=()
     ).content
 
+
+def test_browser_guidance_includes_upload_when_browser_tools_present(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from agent.tools.base import Tool
+
+    home = tmp_path / "home"
+    home.mkdir()
+    akvan = home / ".akvan"
+    akvan.mkdir()
+    monkeypatch.setenv("AKVAN_HOME", str(akvan))
+    (akvan / "SOUL.md").write_text("IDENTITY", encoding="utf-8")
+
+    fake_browser = Tool(
+        name="browser_start",
+        description="start",
+        parameters={"type": "object", "properties": {}},
+        run=lambda: "ok",
+    )
+    builder = PromptBuilder(cwd=tmp_path, user_home=home)
+    skills = builder.discover_skills()
+    snapshot = builder.build(
+        model="model", provider="fake", skills=skills, tools=(fake_browser,)
+    )
+    assert "browser_upload" in snapshot.content
+    assert "Browser Tools" in snapshot.content

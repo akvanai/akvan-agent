@@ -7,16 +7,36 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from agent.tools.browser_runtime.config import x_account_config
+from agent.config import akvan_home
+from agent.tools.browser_runtime.config import (
+    CONTAINER_PROFILES_DIR,
+    browser_config,
+    profiles_dir,
+)
 
 DEFAULT_DOCKER_BASE_IMAGE = "mcr.microsoft.com/playwright/python:v1.52.0-noble"
 DEFAULT_DOCKER_IMAGE = "akvan-agent-browser-runtime:playwright-1.52.0"
 DEFAULT_CONTAINER_NAME = "akvan-agent-browser-runtime"
-CONTAINER_AUTH_DIR = "/akvan-auth"
+# Bump when runtime HTTP API / mounts change so stale containers are recreated.
+RUNTIME_API_VERSION = "4"
 
 
 class DockerRuntimeError(RuntimeError):
     pass
+
+
+def _package_root() -> Path:
+    """Return the host tree mounted at /app inside the Docker runtime."""
+
+    app = akvan_home() / "app"
+    marker = Path("agent") / "tools" / "browser_runtime" / "server.py"
+    if (app / marker).is_file():
+        return app.resolve()
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if (parent / marker).is_file():
+            return parent
+    return here.parents[3]
 
 
 def ensure_docker_runtime(*, config: dict[str, Any], project_root: Path | None = None) -> None:
@@ -30,11 +50,10 @@ def ensure_docker_runtime(*, config: dict[str, Any], project_root: Path | None =
     host = str(config.get("host") or "127.0.0.1")
     image = str(config.get("image") or DEFAULT_DOCKER_IMAGE)
     base_image = str(config.get("base_image") or DEFAULT_DOCKER_BASE_IMAGE)
-    package_root = Path(__file__).resolve().parents[3]
-    x_cfg = x_account_config(project_root=project_root)
-    auth_path = Path(x_cfg["auth_state_path"]).expanduser()
-    auth_dir = auth_path.parent
-    auth_target = f"{CONTAINER_AUTH_DIR}/{auth_path.name}"
+    package_root = _package_root()
+    profiles_root = profiles_dir(project_root=project_root)
+    profiles_root.mkdir(parents=True, exist_ok=True)
+    timeout = int(browser_config(project_root=project_root)["inactivity_timeout_seconds"])
 
     _ensure_runtime_image(image=image, base_image=base_image)
 
@@ -42,11 +61,14 @@ def ensure_docker_runtime(*, config: dict[str, Any], project_root: Path | None =
     if existing and _matches(existing, port=port, image=image):
         if not _is_running(existing):
             _run(["docker", "start", container_name])
-        return
-    if existing:
+            existing = _inspect(container_name) or existing
+        # install.sh replaces ~/.akvan/app via mv; Docker can keep the old inode mounted.
+        if _app_mount_healthy(container_name, existing):
+            return
+        _run(["docker", "rm", "-f", container_name])
+    elif existing:
         _run(["docker", "rm", "-f", container_name])
 
-    auth_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
         "docker",
         "run",
@@ -59,18 +81,22 @@ def ensure_docker_runtime(*, config: dict[str, Any], project_root: Path | None =
         f"akvan.runtime.port={port}",
         "--label",
         f"akvan.runtime.image={image}",
+        "--label",
+        f"akvan.runtime.api={RUNTIME_API_VERSION}",
         "-p",
         f"{host}:{port}:{port}",
         "-v",
         f"{package_root}:/app:ro",
         "-v",
-        f"{auth_dir}:{CONTAINER_AUTH_DIR}:ro",
+        f"{profiles_root}:{CONTAINER_PROFILES_DIR}",
         "-w",
         "/app",
         "-e",
         "PYTHONPATH=/app",
         "-e",
-        f"AKVAN_X_AUTH_STATE_PATH={auth_target}",
+        f"AKVAN_BROWSER_PROFILES_DIR={CONTAINER_PROFILES_DIR}",
+        "-e",
+        f"AKVAN_BROWSER_INACTIVITY_TIMEOUT={timeout}",
         "-e",
         "AKVAN_BROWSER_RUNTIME_NAME=akvan-docker",
         image,
@@ -80,12 +106,45 @@ def ensure_docker_runtime(*, config: dict[str, Any], project_root: Path | None =
         "0.0.0.0",
         "--port",
         str(port),
-        "--auth-state-path",
-        auth_target,
+        "--profiles-dir",
+        CONTAINER_PROFILES_DIR,
+        "--inactivity-timeout",
+        str(timeout),
         "--runtime",
         "akvan-docker",
     ]
     _run(cmd)
+
+
+CONTAINER_SERVER_MARKER = "/app/agent/tools/browser_runtime/server.py"
+
+
+def _app_mount_healthy(container_name: str, container: dict[str, Any]) -> bool:
+    """Return True when the container can see the mounted runtime server script.
+
+    Path labels alone are not enough: replacing ~/.akvan/app with ``mv`` keeps the
+    same host path string while Docker stays bound to the deleted inode.
+    """
+
+    if not _is_running(container):
+        return False
+    result = subprocess.run(
+        [
+            "docker",
+            "exec",
+            "-w",
+            "/",
+            container_name,
+            "test",
+            "-f",
+            CONTAINER_SERVER_MARKER,
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    return result.returncode == 0
 
 
 def remove_docker_runtime(*, container_name: str = DEFAULT_CONTAINER_NAME) -> bool:
@@ -158,6 +217,7 @@ def _matches(container: dict[str, Any], *, port: int, image: str) -> bool:
         labels.get("app") == "akvan-agent-browser-runtime"
         and labels.get("akvan.runtime.port") == str(port)
         and labels.get("akvan.runtime.image") == image
+        and labels.get("akvan.runtime.api") == RUNTIME_API_VERSION
         and _has_published_port(container, port=port)
     )
 

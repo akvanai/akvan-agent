@@ -123,36 +123,43 @@ the model used to summarize large extracted pages. See
 
 ## Browser tools
 
-Akvan can expose optional browser-backed tools for banner generation and X
-account automation. They are off by default and must be enabled with:
+Akvan can expose optional browser-backed tools for interactive browsing and banner
+generation. They are off by default and must be enabled with:
 
 ```bash
 akvan tools
 ```
 
-Both tools share one `browser_runtime` backed by Playwright/Chromium. For X
-account automation, local mode is bundled with Akvan Agent and auto-starts on
-first use when the tool is enabled. Docker mode is managed by Akvan Agent: choose a port and Akvan starts its own
-container, publishing it to the configured `browser_runtime.host` and
-`browser_runtime.port`. Switching to local mode, or running `akvan uninstall` /
-`./install.sh --uninstall` / `--purge`, stops and removes the Docker browser runtime
-container. Expect roughly 2
-CPU cores, 2 GB free RAM, and 1 GB disk for comfortable use. Docker mode may
-need more memory.
+Both share one `browser_runtime` backed by Playwright/Chromium. Local mode is
+bundled with Akvan Agent and auto-starts on first use when enabled. Docker mode
+is managed by Akvan Agent: choose a port and Akvan starts its own container,
+publishing it to the configured `browser_runtime.host` and `browser_runtime.port`.
+Switching to local mode, or running `akvan uninstall` / `./install.sh --uninstall`
+/ `--purge`, stops and removes the Docker browser runtime container. Expect
+roughly 2 CPU cores, 2 GB free RAM, and 1 GB disk for comfortable use. Docker
+mode may need more memory.
 
 Available optional toolsets:
 
 | Toolset | Purpose |
 |---------|---------|
+| `browser` | Agent-driven navigate/snapshot/click/upload with named auth profiles |
 | `banner_generation` | Create, inspect, and render reusable HTML/CSS/meta templates with Playwright |
-| `x_account` | Check X auth, fetch profiles, and post only after explicit confirmation |
 
-Banner generation keeps related files together under `~/.akvan/banners` by default: reusable
+Enable **Browser** and add **Auth profiles** under `akvan tools` →
+Browser. Profiles store Playwright `storage_state` under
+`~/.akvan/browser/profiles/<name>/`. On a VPS or for sites that block automated
+login (for example X), import a storage state file created on a desktop machine.
+Interactive login is only offered when a local display is available.
+
+Banner generation (under Art) keeps related files together under `~/.akvan/banners` by default: reusable
 `templates/<id>/index.html`, `style.css`, and `meta.json`; generated PNGs under
 `renders/`; and reusable local assets under `assets/`. Rendering substitutes escaped
 data, disables page JavaScript, blocks browser network requests, and captures the
-configured viewport with Playwright. X Playwright storage remains private. Never
-commit `auth.json`, private media, or private templates.
+configured viewport with Playwright. Use `browser_upload` to attach those images (or
+vault media) in an open page; the host sends file bytes to the runtime over HTTP (no
+vault/banners Docker mounts). Auth profile storage remains private. Never
+commit `storage_state.json`, private media, or private templates.
 
 ## Chat, tools, and approvals
 
@@ -167,10 +174,14 @@ recalls past chats from the session database. Ordinary project edits run without
 `read_file` can use absolute paths outside the project; it blocks known credential and
 secret paths (`.env*`, `~/.ssh/`, `~/.akvan/.env`, etc.). The `terminal` tool is not
 subject to the same read blocks and can bypass them — review approvals carefully.
-Dangerous commands, sensitive file writes, and writes outside the project require
-`once`, `session`, `always`, or `deny` approval. Approval times out closed after
-60 seconds. Catastrophic host commands are always blocked, including in `--yolo` or
-`/yolo` mode.
+Generated images, downloads, and other agent media belong in the **agent vault**
+(`~/.akvan/vault` by default; override with `vault.root_dir` in `config.yaml`).
+Vault writes do not require the sensitive-`~/.akvan` approval prompt; credentials,
+profiles, and config under `~/.akvan` remain protected. Managed banner tools still
+use `~/.akvan/banners`. Dangerous commands, other sensitive file writes, and writes
+outside the project require `once`, `session`, `always`, or `deny` approval.
+Approval times out closed after 60 seconds. Catastrophic host commands are always
+blocked, including in `--yolo` or `/yolo` mode.
 
 In the interactive terminal, approval requests appear inside the active response.
 Press the displayed number (`1`–`4`) to choose, `y` to allow once, or `n`/`d`

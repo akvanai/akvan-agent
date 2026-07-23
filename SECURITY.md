@@ -45,8 +45,12 @@ them via the `terminal` tool or other host access.
 ## File Write Policy
 
 - Ordinary project edits run without prompts.
-- Dangerous or sensitive writes (outside project root, `.env`, `.ssh`, `~/.akvan/`,
-  etc.) require explicit approval unless bypassed by `--yolo` or `AKVAN_APPROVAL_MODE=off`.
+- Writes under the agent media vault (`~/.akvan/vault` by default) are allowed
+  without the sensitive-`~/.akvan` approval prompt. The vault is for media and
+  files only — not credentials or config.
+- Other dangerous or sensitive writes (outside project root, `.env`, `.ssh`,
+  non-vault `~/.akvan/` paths, etc.) require explicit approval unless bypassed by
+  `--yolo` or `AKVAN_APPROVAL_MODE=off`.
 
 ## Terminal Policy
 
@@ -96,6 +100,9 @@ Akvan applies several safeguards by default:
 - Session database files (`state.db` and WAL sidecars), logs, configuration,
   memory files, and credential files are created with mode `0600`.
 - Existing installs are tightened automatically when Akvan starts.
+- `browser_upload` sends file bytes to the browser runtime over HTTP (temp files
+  inside the runtime). Docker does not mount the vault or banners for media;
+  auth profiles remain on their own mount. Do not put secrets in the vault.
 
 This protects stored session and configuration data from other local OS users.
 It does not prevent network attackers or unrestricted tool execution from

@@ -91,6 +91,14 @@ def harden_akvan_home(home: Path | None = None) -> Path:
 
     _harden_tree_files(home / "logs")
     _harden_tree_files(home / "memories")
+    _harden_tree_files(home / "browser" / "profiles")
+    _harden_tree_files(home / "x")
+
+    from agent.vault import ensure_vault
+
+    vault = ensure_vault()
+    if is_under_akvan_home(vault):
+        _harden_tree_files(vault)
 
     return home
 

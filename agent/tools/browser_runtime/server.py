@@ -7,11 +7,12 @@ import importlib.util
 import json
 import os
 import sys
+import tempfile
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import ModuleType
 from typing import Any
-
 
 def _load_sibling(module_filename: str, module_name: str) -> ModuleType:
     """Load a sibling module by path without importing agent.tools package deps.
@@ -33,12 +34,21 @@ def _load_banner_renderer():
     return _load_sibling("banner_renderer.py", "akvan_banner_renderer").render_banner_payload
 
 
-def _load_x_ops() -> ModuleType:
-    return _load_sibling("x_ops.py", "akvan_x_ops")
+_SESSION_OPS: ModuleType | None = None
+
+
+def _load_session_ops() -> ModuleType:
+    """Load session_ops once so the persistent BrowserSession survives across requests."""
+
+    global _SESSION_OPS
+    if _SESSION_OPS is None:
+        _SESSION_OPS = _load_sibling("session_ops.py", "akvan_session_ops")
+    return _SESSION_OPS
 
 
 class RuntimeHandler(BaseHTTPRequestHandler):
-    auth_state_path: Path | None = None
+    profiles_dir: Path | None = None
+    inactivity_timeout_seconds = 900
     runtime_name = "akvan-runtime"
 
     server_version = "AkvanBrowserRuntime/0.1"
@@ -50,24 +60,217 @@ class RuntimeHandler(BaseHTTPRequestHandler):
         if self.path == "/health":
             self._send_json(200, {"ok": True, "runtime": self.runtime_name})
             return
-        if self.path == "/x/auth/status":
-            x_ops = _load_x_ops()
-            self._send_json(200, x_ops.x_auth_status(self.auth_state_path, runtime=self.runtime_name))
+        if self.path == "/browser/status":
+            self._handle_browser_status()
             return
         self._send_json(404, {"ok": False, "error": "not_found"})
 
     def do_POST(self) -> None:  # noqa: N802
         payload = self._read_json()
-        if self.path == "/x/post":
-            self._handle_x_post(payload)
+        if self.path == "/browser/start":
+            self._handle_browser_start(payload)
             return
-        if self.path == "/x/fetch-profile":
-            self._handle_x_fetch_profile(payload)
+        if self.path == "/browser/navigate":
+            self._handle_browser_navigate(payload)
+            return
+        if self.path == "/browser/snapshot":
+            self._handle_browser_snapshot(payload)
+            return
+        if self.path == "/browser/click":
+            self._handle_browser_click(payload)
+            return
+        if self.path == "/browser/type":
+            self._handle_browser_type(payload)
+            return
+        if self.path == "/browser/scroll":
+            self._handle_browser_scroll(payload)
+            return
+        if self.path == "/browser/back":
+            self._handle_browser_back(payload)
+            return
+        if self.path == "/browser/press":
+            self._handle_browser_press(payload)
+            return
+        if self.path == "/browser/upload":
+            self._handle_browser_upload(payload)
+            return
+        if self.path == "/browser/close":
+            self._handle_browser_close(payload)
             return
         if self.path == "/banner/render":
             self._handle_banner_render(payload)
             return
         self._send_json(404, {"ok": False, "error": "not_found"})
+
+    def _session(self) -> Any:
+        session_ops = _load_session_ops()
+        return session_ops.get_session(
+            inactivity_timeout_seconds=self.inactivity_timeout_seconds
+        )
+
+    def _handle_browser_status(self) -> None:
+        try:
+            self._send_json(200, self._session().status())
+        except Exception as exc:  # noqa: BLE001
+            self._send_json(500, {"ok": False, "error": str(exc)})
+
+    def _resolve_storage_path(self, payload: dict[str, Any]) -> str | None:
+        explicit = str(payload.get("storageStatePath") or payload.get("storage_state_path") or "").strip()
+        if explicit:
+            return explicit
+        profile = str(payload.get("profile") or "").strip()
+        if not profile:
+            return None
+        # Prefer host/container path under configured profiles dir.
+        root = self.profiles_dir
+        if root is None:
+            env_root = os.getenv("AKVAN_BROWSER_PROFILES_DIR", "").strip()
+            root = Path(env_root) if env_root else None
+        if root is None:
+            raise RuntimeError(
+                "Profile was requested but browser profiles directory is not configured on the runtime."
+            )
+        path = Path(root) / profile / "storage_state.json"
+        return str(path)
+
+    def _handle_browser_start(self, payload: dict[str, Any]) -> None:
+        profile = str(payload.get("profile") or "").strip() or None
+        url = str(payload.get("url") or "").strip() or None
+        try:
+            storage_path = self._resolve_storage_path(payload)
+            if profile and storage_path and not Path(storage_path).is_file():
+                self._send_json(
+                    400,
+                    {
+                        "ok": False,
+                        "error": f"Profile {profile!r} storage state not found at {storage_path}",
+                    },
+                )
+                return
+            result = self._session().start(
+                profile=profile,
+                storage_state_path=storage_path,
+                url=url,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._send_json(500, {"ok": False, "error": str(exc)})
+            return
+        self._send_json(200, result)
+
+    def _handle_browser_navigate(self, payload: dict[str, Any]) -> None:
+        url = str(payload.get("url") or "").strip()
+        try:
+            result = self._session().navigate(url)
+        except Exception as exc:  # noqa: BLE001
+            self._send_json(500, {"ok": False, "error": str(exc)})
+            return
+        self._send_json(200, result)
+
+    def _handle_browser_snapshot(self, payload: dict[str, Any]) -> None:
+        full = bool(payload.get("full") or False)
+        try:
+            result = self._session().snapshot(full=full)
+        except Exception as exc:  # noqa: BLE001
+            self._send_json(500, {"ok": False, "error": str(exc)})
+            return
+        self._send_json(200, result)
+
+    def _handle_browser_click(self, payload: dict[str, Any]) -> None:
+        ref = str(payload.get("ref") or "").strip()
+        try:
+            result = self._session().click(ref)
+        except Exception as exc:  # noqa: BLE001
+            self._send_json(500, {"ok": False, "error": str(exc)})
+            return
+        self._send_json(200, result)
+
+    def _handle_browser_type(self, payload: dict[str, Any]) -> None:
+        ref = str(payload.get("ref") or "").strip()
+        text = str(payload.get("text") or "")
+        submit = bool(payload.get("submit") or False)
+        try:
+            result = self._session().type_text(ref, text, submit=submit)
+        except Exception as exc:  # noqa: BLE001
+            self._send_json(500, {"ok": False, "error": str(exc)})
+            return
+        self._send_json(200, result)
+
+    def _handle_browser_scroll(self, payload: dict[str, Any]) -> None:
+        direction = str(payload.get("direction") or "down").strip().lower()
+        if direction not in {"up", "down"}:
+            self._send_json(400, {"ok": False, "error": "direction must be 'up' or 'down'."})
+            return
+        try:
+            result = self._session().scroll(direction)
+        except Exception as exc:  # noqa: BLE001
+            self._send_json(500, {"ok": False, "error": str(exc)})
+            return
+        self._send_json(200, result)
+
+    def _handle_browser_back(self, payload: dict[str, Any]) -> None:
+        _ = payload
+        try:
+            result = self._session().back()
+        except Exception as exc:  # noqa: BLE001
+            self._send_json(500, {"ok": False, "error": str(exc)})
+            return
+        self._send_json(200, result)
+
+    def _handle_browser_press(self, payload: dict[str, Any]) -> None:
+        key = str(payload.get("key") or "").strip()
+        if not key:
+            self._send_json(400, {"ok": False, "error": "key is required."})
+            return
+        try:
+            result = self._session().press(key)
+        except Exception as exc:  # noqa: BLE001
+            self._send_json(500, {"ok": False, "error": str(exc)})
+            return
+        self._send_json(200, result)
+
+    def _handle_browser_upload(self, payload: dict[str, Any]) -> None:
+        ref = str(payload.get("ref") or "").strip() or None
+        files = payload.get("files")
+        if not isinstance(files, list) or not files:
+            self._send_json(
+                400,
+                {
+                    "ok": False,
+                    "error": "files is required (list of {name, content_base64}).",
+                },
+            )
+            return
+        try:
+            upload_mod = _load_sibling("upload_paths.py", "akvan_upload_paths")
+            dest = Path(tempfile.gettempdir()) / "akvan-browser-upload" / uuid.uuid4().hex
+            paths = upload_mod.materialize_upload_files(files, dest_dir=dest)
+            result = self._session().upload(paths, ref=ref)
+            result = {
+                **result,
+                "files": [
+                    str(item.get("name") or "")
+                    for item in files
+                    if isinstance(item, dict)
+                ],
+            }
+        except Exception as exc:  # noqa: BLE001
+            if type(exc).__name__ == "UploadPathError":
+                self._send_json(400, {"ok": False, "error": str(exc)})
+                return
+            self._send_json(500, {"ok": False, "error": str(exc)})
+            return
+        self._send_json(200, result)
+
+    def _handle_browser_close(self, payload: dict[str, Any]) -> None:
+        save = payload.get("save")
+        if save is None:
+            save = True
+        try:
+            result = self._session().close(save=bool(save))
+        except Exception as exc:  # noqa: BLE001
+            self._send_json(500, {"ok": False, "error": str(exc)})
+            return
+        self._send_json(200, result)
 
     def _handle_banner_render(self, payload: dict[str, Any]) -> None:
         try:
@@ -78,31 +281,6 @@ class RuntimeHandler(BaseHTTPRequestHandler):
             return
         except Exception as exc:  # noqa: BLE001 - serialize the runtime boundary.
             self._send_json(500, {"ok": False, "error": "banner_render_failed", "message": str(exc)})
-            return
-        self._send_json(200, result)
-
-    def _handle_x_post(self, payload: dict[str, Any]) -> None:
-        text = str(payload.get("text") or "").strip()
-        media_path = str(payload.get("mediaPath") or "").strip() or None
-        if not text:
-            self._send_json(400, {"ok": False, "error": "Post text is required."})
-            return
-        try:
-            x_ops = _load_x_ops()
-            result = x_ops.post_to_x(text=text, media_path=media_path, auth_state_path=self.auth_state_path)
-        except Exception as exc:  # noqa: BLE001 - runtime boundary should serialize errors.
-            self._send_json(500, {"ok": False, "error": str(exc)})
-            return
-        self._send_json(200, result)
-
-    def _handle_x_fetch_profile(self, payload: dict[str, Any]) -> None:
-        username = str(payload.get("username") or "").lstrip("@").strip()
-        limit = int(payload.get("limit") or 10)
-        try:
-            x_ops = _load_x_ops()
-            result = x_ops.fetch_x_profile(username=username, limit=limit, auth_state_path=self.auth_state_path)
-        except Exception as exc:  # noqa: BLE001 - runtime boundary should serialize errors.
-            self._send_json(500, {"ok": False, "error": str(exc)})
             return
         self._send_json(200, result)
 
@@ -129,11 +307,22 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run Akvan's browser runtime.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=49733)
-    parser.add_argument("--auth-state-path", default=os.getenv("AKVAN_X_AUTH_STATE_PATH", ""))
+    parser.add_argument(
+        "--profiles-dir",
+        default=os.getenv("AKVAN_BROWSER_PROFILES_DIR", ""),
+    )
+    parser.add_argument(
+        "--inactivity-timeout",
+        type=int,
+        default=int(os.getenv("AKVAN_BROWSER_INACTIVITY_TIMEOUT", "900")),
+    )
     parser.add_argument("--runtime", default=os.getenv("AKVAN_BROWSER_RUNTIME_NAME", "akvan-local"))
     args = parser.parse_args(argv)
 
-    RuntimeHandler.auth_state_path = Path(args.auth_state_path).expanduser() if args.auth_state_path else None
+    RuntimeHandler.profiles_dir = (
+        Path(args.profiles_dir).expanduser() if args.profiles_dir else None
+    )
+    RuntimeHandler.inactivity_timeout_seconds = max(60, int(args.inactivity_timeout))
     RuntimeHandler.runtime_name = args.runtime
     server = ThreadingHTTPServer((args.host, args.port), RuntimeHandler)
     print(f"Akvan browser runtime listening on http://{args.host}:{args.port}", flush=True)

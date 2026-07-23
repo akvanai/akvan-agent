@@ -12,7 +12,12 @@ from typing import Any
 import httpx
 
 from agent.config import akvan_home
-from agent.tools.browser_runtime.config import browser_runtime_config, runtime_base_url, x_account_config
+from agent.tools.browser_runtime.config import (
+    browser_config,
+    browser_runtime_config,
+    profiles_dir,
+    runtime_base_url,
+)
 from agent.tools.browser_runtime.docker import DockerRuntimeError, ensure_docker_runtime
 
 
@@ -26,6 +31,7 @@ class BrowserRuntimeClient:
         self.config = browser_runtime_config(project_root=project_root)
         self.base_url = runtime_base_url(project_root=project_root).rstrip("/")
         self.timeout = timeout
+        self._recreated_stale_docker = False
 
     def get(self, path: str) -> dict[str, Any]:
         return self._request("GET", path)
@@ -38,6 +44,12 @@ class BrowserRuntimeClient:
         try:
             return self._send(method, url, **kwargs)
         except BrowserRuntimeError as exc:
+            if self._should_recreate_stale_docker(exc, path):
+                self._recreate_docker_runtime()
+                try:
+                    return self._send(method, url, **kwargs)
+                except BrowserRuntimeError as retry_exc:
+                    raise self._unavailable_error(retry_exc) from retry_exc
             if not self._should_autostart(exc):
                 if self._should_start_docker(exc):
                     self._start_docker_runtime()
@@ -81,11 +93,49 @@ class BrowserRuntimeClient:
     def _should_start_docker(self, exc: BrowserRuntimeError) -> bool:
         return self.config.get("mode") == "docker" and "unavailable" in str(exc).lower()
 
+    def _should_recreate_stale_docker(self, exc: BrowserRuntimeError, path: str) -> bool:
+        if self._recreated_stale_docker:
+            return False
+        if self.config.get("mode") != "docker":
+            return False
+        message = str(exc)
+        # install.sh replaces ~/.akvan/app via mv; the running container can keep a
+        # dead bind mount while /health still answers from the old process.
+        if (
+            "No such file or directory" in message
+            and "/app/agent/tools/browser_runtime/" in message
+        ):
+            return True
+        normalized = path.lstrip("/")
+        if not (normalized.startswith("browser/") or normalized == "browser"):
+            return False
+        return "HTTP 404" in message
+
+    def _recreate_docker_runtime(self) -> None:
+        """Force-recreate a Docker runtime with a stale API or broken /app mount."""
+
+        self._recreated_stale_docker = True
+        from agent.tools.browser_runtime.docker import remove_docker_runtime
+
+        try:
+            remove_docker_runtime(
+                container_name=str(
+                    self.config.get("container_name") or "akvan-agent-browser-runtime"
+                )
+            )
+            ensure_docker_runtime(config=self.config, project_root=self.project_root)
+        except DockerRuntimeError as exc:
+            raise BrowserRuntimeError(str(exc)) from exc
+        self._wait_until_ready()
+
     def _start_local_runtime(self) -> None:
         log_dir = akvan_home() / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / "browser-runtime.log"
         root = Path(self.project_root).resolve() if self.project_root else Path.cwd().resolve()
+        browser_cfg = browser_config(project_root=self.project_root)
+        profiles_root = profiles_dir(project_root=self.project_root)
+        profiles_root.mkdir(parents=True, exist_ok=True)
         cmd = [
             sys.executable,
             "-m",
@@ -94,8 +144,10 @@ class BrowserRuntimeClient:
             str(self.config["host"]),
             "--port",
             str(self.config["port"]),
-            "--auth-state-path",
-            str(x_account_config(project_root=self.project_root)["auth_state_path"]),
+            "--profiles-dir",
+            str(profiles_root),
+            "--inactivity-timeout",
+            str(browser_cfg["inactivity_timeout_seconds"]),
         ]
         with log_file.open("ab") as stream:
             subprocess.Popen(

@@ -71,9 +71,8 @@ def test_tools_category_menu_is_one_line_and_emoji_led(monkeypatch, tmp_path) ->
     labels = [label for _, label in items]
 
     assert labels[0].startswith("🔎 Search Web  ")
-    assert labels[1].startswith("🌐 Browser Tool  runtime=")
-    assert labels[2].startswith("🐦 Social Media  X=")
-    assert "telegram=" in labels[2]
+    assert labels[1].startswith("🌐 Browser  browser=")
+    assert labels[2].startswith("🐦 Social Media  telegram=")
     assert labels[3].startswith("🎨 Art and Content Creation  banner=")
     assert all(
         "\n" not in label for value, label in items if value != SELECTOR_SEPARATOR
@@ -133,17 +132,17 @@ def test_tools_menus_separate_footer_items(monkeypatch, tmp_path) -> None:
 
 
 def test_single_item_category_menus_have_back() -> None:
-    for items, item_key in (
-        (_browser_menu_items(), "runtime"),
-        (_art_menu_items(), "banner"),
+    for items, item_keys in (
+        (_browser_menu_items(), ("browser", "profiles", "runtime")),
+        (_art_menu_items(), ("banner",)),
     ):
         keys = [key for key, _ in items]
-        assert keys == [item_key, SELECTOR_SEPARATOR, "back"]
+        assert keys == [*item_keys, SELECTOR_SEPARATOR, "back"]
 
 
-def test_social_menu_includes_x_and_telegram_delivery() -> None:
+def test_social_menu_includes_telegram_delivery() -> None:
     keys = [key for key, _ in _social_menu_items()]
-    assert keys == ["x", "telegram_delivery", SELECTOR_SEPARATOR, "back"]
+    assert keys == ["telegram_delivery", SELECTOR_SEPARATOR, "back"]
 
 
 def test_docker_install_prompt_runs_only_after_confirmation(monkeypatch) -> None:

@@ -22,7 +22,9 @@ DEFAULT_RUNTIME_PORT = 49733
 DEFAULT_BANNER_TEMPLATE = "announcement-basic"
 DEFAULT_BANNER_SIZE = "x_landscape"
 DEFAULT_BANNER_ROOT_NAME = "banners"
-DEFAULT_X_FETCH_LIMIT = 10
+DEFAULT_BROWSER_INACTIVITY_TIMEOUT = 900
+DEFAULT_PROFILES_DIR_NAME = "browser/profiles"
+CONTAINER_PROFILES_DIR = "/akvan-browser-profiles"
 
 BANNER_SIZE_PRESETS: dict[str, dict[str, int]] = {
     "x_landscape": {"width": 1200, "height": 675},
@@ -128,16 +130,26 @@ def banner_generation_config(*, project_root: Path | None = None) -> dict[str, A
     }
 
 
-def x_account_config(*, project_root: Path | None = None) -> dict[str, Any]:
-    cfg = _section("x_account", project_root=project_root)
-    home = akvan_home() if project_root is None else project_root
-    fetch_limit = _int(cfg.get("default_fetch_limit"), DEFAULT_X_FETCH_LIMIT)
+def browser_config(*, project_root: Path | None = None) -> dict[str, Any]:
+    cfg = _section("browser", project_root=project_root)
+    timeout = _int(cfg.get("inactivity_timeout_seconds"), DEFAULT_BROWSER_INACTIVITY_TIMEOUT)
     return {
         "enabled": _bool(cfg.get("enabled"), False),
-        "auth_state_path": _path(cfg.get("auth_state_path"), home / "x" / "auth.json"),
-        "post_confirmation": str(cfg.get("post_confirmation") or "always"),
-        "default_fetch_limit": max(1, min(fetch_limit, 50)),
+        "inactivity_timeout_seconds": max(60, timeout),
+        "profiles_dir": profiles_dir(project_root=project_root),
     }
+
+
+def profiles_dir(*, project_root: Path | None = None) -> Path:
+    cfg = _section("browser", project_root=project_root)
+    return _path(cfg.get("profiles_dir"), akvan_home() / DEFAULT_PROFILES_DIR_NAME)
+
+
+def x_account_legacy_auth_path(*, project_root: Path | None = None) -> Path:
+    """Legacy X auth path for one-shot migration into browser profiles."""
+
+    cfg = _section("x_account", project_root=project_root)
+    return _path(cfg.get("auth_state_path"), akvan_home() / "x" / "auth.json")
 
 
 def runtime_base_url(*, project_root: Path | None = None) -> str:
@@ -159,15 +171,83 @@ def is_banner_generation_configured(*, project_root: Path | None = None) -> bool
     return bool(cfg["enabled"] and is_browser_runtime_configured(project_root=project_root))
 
 
-def is_x_account_configured(*, project_root: Path | None = None) -> bool:
-    cfg = x_account_config(project_root=project_root)
+def is_browser_configured(*, project_root: Path | None = None) -> bool:
+    migrate_legacy_x_account_config(project_root=project_root)
+    cfg = browser_config(project_root=project_root)
     return bool(cfg["enabled"] and is_browser_runtime_configured(project_root=project_root))
+
+
+def migrate_legacy_x_account_config(*, project_root: Path | None = None) -> dict[str, Any]:
+    """Enable interactive browser tools from legacy x_account and migrate auth profile once.
+
+    Safe to call repeatedly: no-ops when there is nothing to migrate.
+    """
+
+    path = config_yaml_path(project_root=project_root)
+    data = _read_yaml_file(path)
+    x_cfg = data.get("x_account") if isinstance(data.get("x_account"), dict) else {}
+    browser_cfg = data.get("browser") if isinstance(data.get("browser"), dict) else {}
+    runtime_cfg = data.get("browser_runtime") if isinstance(data.get("browser_runtime"), dict) else {}
+
+    x_enabled = _bool(x_cfg.get("enabled"), False)
+    runtime_enabled = _bool(runtime_cfg.get("enabled"), False)
+    browser_key_present = "enabled" in browser_cfg
+    browser_enabled = _bool(browser_cfg.get("enabled"), False)
+
+    changed = False
+    migrated_profile = None
+
+    # Turn on interactive browser when the old X toolset was enabled and browser
+    # has not been explicitly configured yet.
+    if x_enabled and runtime_enabled and not browser_key_present:
+        browser_section = data.setdefault("browser", {})
+        if not isinstance(browser_section, dict):
+            browser_section = {}
+            data["browser"] = browser_section
+        browser_section["enabled"] = True
+        browser_section.setdefault(
+            "inactivity_timeout_seconds", DEFAULT_BROWSER_INACTIVITY_TIMEOUT
+        )
+        changed = True
+        browser_enabled = True
+
+    if x_enabled:
+        x_section = data.setdefault("x_account", {})
+        if not isinstance(x_section, dict):
+            x_section = {}
+            data["x_account"] = x_section
+        if _bool(x_section.get("enabled"), False):
+            x_section["enabled"] = False
+            changed = True
+
+    if changed:
+        _save_yaml(data, project_root=project_root)
+        if is_under_akvan_home(path):
+            harden_akvan_home(path.parent)
+
+    if browser_enabled or x_enabled or runtime_enabled:
+        try:
+            from agent.tools.browser_runtime.profiles import migrate_legacy_x_auth
+
+            migrated_profile = migrate_legacy_x_auth(project_root=project_root)
+        except Exception:
+            migrated_profile = None
+
+    return {
+        "changed": changed,
+        "browser_enabled": bool(
+            browser_config(project_root=project_root)["enabled"]
+            and is_browser_runtime_configured(project_root=project_root)
+        ),
+        "migrated_profile": migrated_profile,
+    }
 
 
 def save_browser_tools_yaml(
     *,
     browser_runtime: dict[str, Any] | None = None,
     banner_generation: dict[str, Any] | None = None,
+    browser: dict[str, Any] | None = None,
     x_account: dict[str, Any] | None = None,
     project_root: Path | None = None,
 ) -> Path:
@@ -175,6 +255,7 @@ def save_browser_tools_yaml(
     for key, value in (
         ("browser_runtime", browser_runtime),
         ("banner_generation", banner_generation),
+        ("browser", browser),
         ("x_account", x_account),
     ):
         if value is None:
