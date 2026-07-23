@@ -31,7 +31,11 @@ from agent.ui.rendering import TEXT_LABEL, TEXT_VALUE
 from agent.providers.base import ModelInfo, ProviderError
 from agent.providers.akvan import AkvanProvider
 from agent.providers.deepseek import DEFAULT_DEEPSEEK_MODELS, DeepSeekProvider
-from agent.providers.openai_codex import DEFAULT_CODEX_MODELS, load_codex_cli_token
+from agent.providers.openai_codex import (
+    DEFAULT_CODEX_MODELS,
+    OpenAICodexProvider,
+    load_codex_cli_token,
+)
 from agent.providers.openrouter import OpenRouterProvider
 
 
@@ -719,9 +723,39 @@ def configure_openai_codex(console: Console, current) -> int:
             )
             return 2
 
+    if auth_mode == "cli":
+        credential = load_codex_cli_token()
+    else:
+        credential = openai_api_key
+    provider = OpenAICodexProvider(credential, auth_mode=auth_mode)
+
+    def load_models():
+        try:
+            return provider.list_models()
+        except ProviderError:
+            return list(DEFAULT_CODEX_MODELS)
+        finally:
+            provider.close()
+
+    try:
+        models = run_full_screen_task(
+            title="OpenAI Codex",
+            text="Loading the Codex model catalog",
+            callback=load_models,
+        )
+    except ProviderError as exc:
+        run_full_screen_message(
+            title="Could not load models",
+            text=str(exc),
+        )
+        return 2
+
+    if not models:
+        models = list(DEFAULT_CODEX_MODELS)
+
     model = select_model(
         console,
-        list(DEFAULT_CODEX_MODELS),
+        models,
         current.model if current.provider == "openai-codex" else DEFAULT_CODEX_MODEL,
         title="OpenAI Codex models",
         step=(3, 3),

@@ -19,6 +19,8 @@ from agent.providers.base import (
 )
 
 DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+# Bump when Codex CLI releases so /models returns the current catalog subset.
+CODEX_CLIENT_VERSION = "0.145.0"
 
 DEFAULT_CODEX_MODELS = (
     ModelInfo("gpt-5.5", "GPT-5.5"),
@@ -58,8 +60,61 @@ class OpenAICodexProvider(Provider):
             self._client.close()
 
     def list_models(self) -> list[ModelInfo]:
-        """Return a stable starter model list without requiring a network call."""
-        return list(DEFAULT_CODEX_MODELS)
+        """Fetch the live model catalog for the active auth mode."""
+        if self.auth_mode == "cli":
+            return self._list_cli_models()
+        return self._list_api_key_models()
+
+    def _list_cli_models(self) -> list[ModelInfo]:
+        try:
+            response = self._client.get(
+                f"{self.base_url}/models",
+                params={"client_version": CODEX_CLIENT_VERSION},
+                headers=self._headers(),
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            exc.response.read()
+            detail = _response_error_detail(exc.response)
+            raise ProviderError(f"OpenAI Codex model lookup failed: {detail}") from exc
+        except httpx.HTTPError as exc:
+            raise ProviderError(f"OpenAI Codex model lookup failed: {exc}") from exc
+
+        try:
+            models = _parse_cli_models_response(response.json())
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ProviderError(
+                "OpenAI Codex returned an unexpected model-list response."
+            ) from exc
+
+        if not models:
+            raise ProviderError("OpenAI Codex returned an empty model list.")
+        return models
+
+    def _list_api_key_models(self) -> list[ModelInfo]:
+        try:
+            response = self._client.get(
+                f"{self.base_url}/models",
+                headers=self._headers(),
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            exc.response.read()
+            detail = _response_error_detail(exc.response)
+            raise ProviderError(f"OpenAI Codex model lookup failed: {detail}") from exc
+        except httpx.HTTPError as exc:
+            raise ProviderError(f"OpenAI Codex model lookup failed: {exc}") from exc
+
+        try:
+            models = _parse_api_key_models_response(response.json())
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ProviderError(
+                "OpenAI Codex returned an unexpected model-list response."
+            ) from exc
+
+        if not models:
+            raise ProviderError("OpenAI Codex returned an empty model list.")
+        return models
 
     def complete(
         self,
@@ -278,6 +333,71 @@ def _responses_tools(tools: list[object] | None) -> list[dict[str, object]]:
             }
         )
     return converted
+
+
+def _parse_cli_models_response(data: object) -> list[ModelInfo]:
+    if not isinstance(data, dict):
+        raise TypeError("models response must be an object")
+    items = data.get("models")
+    if not isinstance(items, list):
+        raise TypeError("models response missing models list")
+
+    parsed: list[tuple[ModelInfo, str | None]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        slug = item.get("slug")
+        if not isinstance(slug, str) or not slug.strip():
+            continue
+        name = item.get("display_name")
+        context = item.get("context_window")
+        visibility = item.get("visibility")
+        parsed.append(
+            (
+                ModelInfo(
+                    id=slug,
+                    name=name if isinstance(name, str) and name.strip() else slug,
+                    context_length=context if isinstance(context, int) else None,
+                ),
+                visibility if isinstance(visibility, str) else None,
+            )
+        )
+
+    listed = [model for model, visibility in parsed if visibility == "list"]
+    if listed:
+        return listed
+    return [model for model, _visibility in parsed]
+
+
+def _is_api_key_model_candidate(model_id: str) -> bool:
+    lowered = model_id.lower()
+    if "codex" in lowered:
+        return True
+    return (
+        lowered.startswith("gpt-5")
+        or lowered.startswith("o3")
+        or lowered.startswith("o4")
+    )
+
+
+def _parse_api_key_models_response(data: object) -> list[ModelInfo]:
+    if not isinstance(data, dict):
+        raise TypeError("models response must be an object")
+    items = data.get("data")
+    if not isinstance(items, list):
+        raise TypeError("models response missing data list")
+
+    models: list[ModelInfo] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        model_id = item.get("id")
+        if not isinstance(model_id, str) or not model_id.strip():
+            continue
+        if not _is_api_key_model_candidate(model_id):
+            continue
+        models.append(ModelInfo(id=model_id, name=model_id))
+    return models
 
 
 def _parse_responses_stream_line(line: str) -> ProviderStreamEvent | None:

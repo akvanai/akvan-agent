@@ -11,7 +11,13 @@ import pytest
 from agent.config import Settings
 from agent.providers import build_provider
 from agent.providers.base import ProviderError
-from agent.providers.openai_codex import OpenAICodexProvider, codex_auth_candidate_paths, load_codex_cli_token
+from agent.providers.openai_codex import (
+    CODEX_CLIENT_VERSION,
+    DEFAULT_CODEX_MODELS,
+    OpenAICodexProvider,
+    codex_auth_candidate_paths,
+    load_codex_cli_token,
+)
 
 
 def test_openai_codex_api_key_request_construction() -> None:
@@ -153,11 +159,89 @@ def test_openai_codex_cli_mode_parses_responses_function_call() -> None:
     assert events[0].tool_calls[0]["function"] == {"name": "testy", "arguments": "{}"}
 
 
-def test_openai_codex_lists_default_models_without_network() -> None:
-    provider = OpenAICodexProvider(api_key="openai-key")
+def test_openai_codex_lists_cli_models_from_backend() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "models": [
+                    {
+                        "slug": "gpt-5.5",
+                        "display_name": "GPT-5.5",
+                        "context_window": 400000,
+                        "visibility": "list",
+                    },
+                    {
+                        "slug": "gpt-hidden",
+                        "display_name": "Hidden",
+                        "context_window": 1000,
+                        "visibility": "hidden",
+                    },
+                ]
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    provider = OpenAICodexProvider(api_key="cli-token", auth_mode="cli", client=client)
+
+    models = provider.list_models()
+
+    assert len(models) == 1
+    assert models[0].id == "gpt-5.5"
+    assert models[0].name == "GPT-5.5"
+    assert models[0].context_length == 400000
+    request = requests[0]
+    assert request.url.path == "/backend-api/codex/models"
+    assert request.url.params["client_version"] == CODEX_CLIENT_VERSION
+    assert request.headers["Authorization"] == "Bearer cli-token"
+
+
+def test_openai_codex_lists_api_key_models_filtered() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "gpt-5.5"},
+                    {"id": "gpt-5.3-codex"},
+                    {"id": "o3-mini"},
+                    {"id": "o4-mini"},
+                    {"id": "gpt-4o"},
+                    {"id": "text-embedding-3-small"},
+                    {"id": "dall-e-3"},
+                ]
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    provider = OpenAICodexProvider(api_key="openai-key", client=client)
 
     model_ids = [model.id for model in provider.list_models()]
 
+    assert model_ids == ["gpt-5.5", "gpt-5.3-codex", "o3-mini", "o4-mini"]
+    assert str(requests[0].url) == "https://api.openai.com/v1/models"
+
+
+def test_openai_codex_list_models_raises_on_empty_catalog() -> None:
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, json={"data": [{"id": "gpt-4o"}]})
+        )
+    )
+    provider = OpenAICodexProvider(api_key="openai-key", client=client)
+
+    with pytest.raises(ProviderError, match="empty model list"):
+        provider.list_models()
+
+
+def test_openai_codex_default_models_fallback_catalog() -> None:
+    model_ids = [model.id for model in DEFAULT_CODEX_MODELS]
     assert "gpt-5.5" in model_ids
     assert "gpt-5.3-codex" in model_ids
 
