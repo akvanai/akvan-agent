@@ -36,6 +36,7 @@ def test_registry_resolves_coding_toolsets(tmp_path: Path) -> None:
         "skills_list",
         "skill_view",
         "skill_manage",
+        "vision_analyze",
     } == set(tools)
     manager.cleanup()
 
