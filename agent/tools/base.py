@@ -18,9 +18,19 @@ class ToolResultKind(str, Enum):
 
 
 @dataclass(frozen=True)
+class ToolImage:
+    """Local image path (or URL) attached to a tool result for vision routing."""
+
+    path: str
+    mime: str = "image/png"
+    question: str = ""
+
+
+@dataclass(frozen=True)
 class ToolResult:
     content: str
     kind: ToolResultKind = ToolResultKind.UNTRUSTED_DATA
+    images: tuple[ToolImage, ...] = ()
 
     @classmethod
     def trusted(cls, content: str) -> "ToolResult":

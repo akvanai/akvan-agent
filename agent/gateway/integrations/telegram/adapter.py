@@ -69,7 +69,11 @@ def callback_from_update(update: Update) -> CallbackInteraction | None:
     )
 
 
-def inbound_from_update(update: Update) -> InboundMessage | None:
+def inbound_from_update(
+    update: Update,
+    *,
+    image_paths: tuple[str, ...] = (),
+) -> InboundMessage | None:
     """Normalize a Telegram update into an inbound gateway message."""
     message = update.effective_message
     chat = update.effective_chat
@@ -79,8 +83,10 @@ def inbound_from_update(update: Update) -> InboundMessage | None:
     if chat.type != ChatType.PRIVATE:
         return None
     text = (message.text or message.caption or "").strip()
-    if not text:
+    if not text and not image_paths:
         return None
+    if not text and image_paths:
+        text = "Please examine this image."
     source = ChatSource(
         platform="telegram",
         chat_id=str(chat.id),
@@ -89,7 +95,57 @@ def inbound_from_update(update: Update) -> InboundMessage | None:
         chat_type="dm",
         message_id=str(message.message_id),
     )
-    return InboundMessage(text=text, source=source, raw=update)
+    return InboundMessage(
+        text=text,
+        source=source,
+        raw=update,
+        image_paths=image_paths,
+    )
+
+
+async def download_telegram_images(update: Update, bot: object) -> tuple[str, ...]:
+    """Download photo/image-document attachments into the screenshot cache."""
+
+    message = update.effective_message
+    if message is None:
+        return ()
+    from agent.vision.encode import screenshots_dir
+    import uuid
+
+    paths: list[str] = []
+    photos = getattr(message, "photo", None) or []
+    if photos:
+        largest = photos[-1]
+        file = await bot.get_file(largest.file_id)
+        dest = screenshots_dir() / f"telegram_{uuid.uuid4().hex}.jpg"
+        await file.download_to_drive(custom_path=str(dest))
+        try:
+            dest.chmod(0o600)
+        except OSError:
+            pass
+        paths.append(str(dest))
+
+    document = getattr(message, "document", None)
+    if document is not None:
+        mime = str(getattr(document, "mime_type", "") or "")
+        name = str(getattr(document, "file_name", "") or "").lower()
+        if mime.startswith("image/") or name.endswith(
+            (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
+        ):
+            file = await bot.get_file(document.file_id)
+            suffix = ".bin"
+            if "." in name:
+                suffix = "." + name.rsplit(".", 1)[-1]
+            elif "/" in mime:
+                suffix = "." + mime.split("/", 1)[1].split(";")[0]
+            dest = screenshots_dir() / f"telegram_{uuid.uuid4().hex}{suffix}"
+            await file.download_to_drive(custom_path=str(dest))
+            try:
+                dest.chmod(0o600)
+            except OSError:
+                pass
+            paths.append(str(dest))
+    return tuple(paths)
 
 
 class TelegramAdapter:
@@ -249,7 +305,10 @@ class TelegramAdapter:
         )
         self._app.add_handler(
             TelegramMessageHandler(
-                filters.TEXT & ~filters.COMMAND,
+                (
+                    (filters.TEXT | filters.CAPTION | filters.PHOTO | filters.Document.IMAGE)
+                    & ~filters.COMMAND
+                ),
                 self._on_message,
             )
         )
@@ -570,7 +629,13 @@ class TelegramAdapter:
     async def _dispatch(self, update: Update) -> None:
         if self._handler is None:
             return
-        inbound = inbound_from_update(update)
+        image_paths: tuple[str, ...] = ()
+        if self._app is not None:
+            try:
+                image_paths = await download_telegram_images(update, self._app.bot)
+            except Exception:
+                logger.exception("Failed to download Telegram image attachments")
+        inbound = inbound_from_update(update, image_paths=image_paths)
         if inbound is None:
             return
         await self._handler(inbound)

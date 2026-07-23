@@ -65,7 +65,7 @@ class ToolRegistry:
         return tuple(self._toolsets)
 
 
-DEFAULT_TOOLSETS = ("core", "files", "terminal", "skills", "memory", "sessions")
+DEFAULT_TOOLSETS = ("core", "files", "vision", "terminal", "skills", "memory", "sessions")
 
 
 def default_enabled_toolsets(*, project_root: Path | None = None) -> tuple[str, ...]:
@@ -94,6 +94,9 @@ def build_registry(
     registry = ToolRegistry()
     registry.register_many(base_tools, toolset="core")
     registry.register_many(build_file_tools(project_root), toolset="files")
+    from agent.tools.vision_tools import build_vision_tools
+
+    registry.register_many(build_vision_tools(), toolset="vision")
     registry.register_many(
         build_terminal_tools(
             project_root,

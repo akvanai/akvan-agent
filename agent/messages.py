@@ -26,8 +26,26 @@ def tool_message_name(message: Message) -> str | None:
     return name if isinstance(name, str) else None
 
 
+def extract_message_text(content: object) -> str:
+    """Return plain text from string or multimodal content parts."""
+
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+        return "\n".join(parts)
+    return str(content)
+
+
 def parse_tool_result_content(content: object) -> dict | None:
     """Parse JSON tool results from raw or wrapped tool message content."""
+    if isinstance(content, list):
+        content = extract_message_text(content)
     if not isinstance(content, str):
         return None
     text = content.strip()
@@ -58,4 +76,4 @@ class Completion:
 class TurnContext:
     """Provider-only content for the current user turn."""
 
-    provider_user_content: str | None = None
+    provider_user_content: str | list[dict[str, object]] | None = None

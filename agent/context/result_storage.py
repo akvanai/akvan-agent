@@ -125,7 +125,7 @@ class ToolResultStore:
                 tool_name,
                 exc,
             )
-        return ToolResult(replacement, result.kind)
+        return ToolResult(replacement, result.kind, images=result.images)
 
     def enforce_turn_budget(self, messages: list[Message], indices: list[int]) -> None:
         candidates: list[tuple[int, int]] = []
@@ -134,6 +134,14 @@ class ToolResultStore:
             if not 0 <= index < len(messages):
                 continue
             content = messages[index].get("content")
+            if isinstance(content, list):
+                from agent.messages import extract_message_text
+
+                text = extract_message_text(content)
+                total += len(text)
+                # Multimodal tool results are not force-persisted as plain text;
+                # image parts stay until compaction prunes them.
+                continue
             if not isinstance(content, str):
                 continue
             total += len(content)

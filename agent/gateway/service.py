@@ -119,7 +119,11 @@ class GatewayService:
             )
             try:
                 await self.chat_session.run_turn(
-                    session, message.text, chat_id, self.approval_flow,
+                    session,
+                    message.text,
+                    chat_id,
+                    self.approval_flow,
+                    image_paths=message.image_paths,
                 )
             except (AgentLoopError, ProviderError) as exc:
                 logger.exception("Gateway turn failed")

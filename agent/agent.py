@@ -531,12 +531,20 @@ class AgentLoop:
                 tool_name=name,
                 call_id=call_id,
             )
+            from agent.vision.attach import build_tool_message_content
+
+            content = build_tool_message_content(
+                tool_result.render(source=name),
+                tool_result.images,
+                provider=self.provider,
+                model=self.model,
+            )
             messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": call_id,
                     "name": name,
-                    "content": tool_result.render(source=name),
+                    "content": content,
                 }
             )
             result_indices.append(len(messages) - 1)

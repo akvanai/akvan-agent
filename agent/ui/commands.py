@@ -177,6 +177,23 @@ def resolve_input(session: "AgentSession", raw_input: str) -> SessionCommand:
             ),
         )
     if not stripped.startswith("/"):
+        from agent.vision.attach import build_user_provider_content
+        from agent.vision.user_images import extract_image_paths_from_text
+
+        display, paths = extract_image_paths_from_text(stripped)
+        if paths:
+            return SessionCommand(
+                SessionCommandKind.TURN,
+                display,
+                turn_context=TurnContext(
+                    provider_user_content=build_user_provider_content(
+                        display,
+                        paths,
+                        provider=session.provider,
+                        model=session.model,
+                    )
+                ),
+            )
         return SessionCommand(SessionCommandKind.TURN, raw_input)
 
     command, _, request = stripped.partition(" ")

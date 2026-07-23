@@ -44,6 +44,7 @@ class InboundMessage:
     text: str
     source: ChatSource
     raw: Any = None
+    image_paths: tuple[str, ...] = ()
 
     def is_command(self) -> bool:
         return self.text.startswith("/")

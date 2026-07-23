@@ -60,6 +60,12 @@ class Provider(ABC):
         """Return True when assistant tool-call turns must include reasoning_content."""
         return False
 
+    def supports_vision(self, model: str) -> bool:
+        """Return True when ``model`` can consume image content parts."""
+        from agent.vision.capabilities import model_looks_vision_capable
+
+        return model_looks_vision_capable(model)
+
     def stream_events(
         self,
         messages: Sequence[Message],

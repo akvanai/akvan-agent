@@ -21,10 +21,27 @@ _PRUNED = "[Historical tool output summarized]"
 def _text(content: object) -> str:
     if isinstance(content, str):
         return content
+    if isinstance(content, list):
+        from agent.messages import extract_message_text
+
+        return extract_message_text(content)
     try:
         return json.dumps(content, ensure_ascii=False)
     except (TypeError, ValueError):
         return str(content or "")
+
+
+def _prune_images_in_message(message: Message) -> bool:
+    content = message.get("content")
+    if not isinstance(content, list):
+        return False
+    from agent.vision.attach import prune_image_parts
+
+    pruned = prune_image_parts(content)
+    if pruned is content:
+        return False
+    message["content"] = pruned
+    return True
 
 
 def _tool_summary(message: Message, content: str) -> str:
@@ -64,7 +81,11 @@ class ContextCompressor:
         pruned = 0
         for index in range(len(result) - 1, -1, -1):
             message = result[index]
-            if message.get("role") != "tool":
+            role = message.get("role")
+            if role in {"tool", "user"} and index < protected_start:
+                if _prune_images_in_message(message):
+                    pruned += 1
+            if role != "tool":
                 continue
             content = _text(message.get("content"))
             if len(content) < 200:

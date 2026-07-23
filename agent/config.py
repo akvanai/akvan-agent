@@ -23,6 +23,7 @@ SUPPORTED_PROVIDERS = {"openrouter", "openai-codex", "deepseek", "akvan"}
 SUPPORTED_CODEX_AUTH_MODES = {"api-key", "cli"}
 SUPPORTED_DEEPSEEK_THINKING_MODES = {"enabled", "disabled"}
 SUPPORTED_DEEPSEEK_REASONING_EFFORTS = {"low", "medium", "high", "max"}
+SUPPORTED_VISION_MODES = {"auto", "native", "aux", "off"}
 
 
 def akvan_home() -> Path:
@@ -57,6 +58,9 @@ class Settings:
     web_extract_backend: str = ""
     searxng_url: str = ""
     web_extract_summary_model: str = ""
+    vision_mode: str = "auto"
+    aux_vision_model: str = ""
+    model_supports_vision: bool | None = None
     akvan_api_key: str = ""
     akvan_backend_url: str = DEFAULT_AKVAN_BACKEND_URL
 
@@ -137,6 +141,20 @@ def _env_value(dotenv: dict[str, str | None], key: str, default: str = "") -> st
     return os.getenv(key, dotenv.get(key) or default).strip()
 
 
+def _env_bool_optional(
+    dotenv: dict[str, str | None], key: str
+) -> bool | None:
+    raw = _env_value(dotenv, key)
+    if not raw:
+        return None
+    lowered = raw.lower()
+    if lowered in {"1", "true", "yes", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
 def load_setup_settings(*, project_root: Path | None = None) -> Settings:
     global_root = akvan_home()
     root = project_root or Path.cwd()
@@ -174,6 +192,9 @@ def load_setup_settings(*, project_root: Path | None = None) -> Settings:
         web_extract_backend=_env_value(dotenv, "AKVAN_WEB_EXTRACT_BACKEND"),
         searxng_url=_env_value(dotenv, "SEARXNG_URL"),
         web_extract_summary_model=_env_value(dotenv, "AKVAN_WEB_EXTRACT_SUMMARY_MODEL"),
+        vision_mode=_env_value(dotenv, "AKVAN_VISION_MODE", "auto").lower() or "auto",
+        aux_vision_model=_env_value(dotenv, "AKVAN_AUX_VISION_MODEL"),
+        model_supports_vision=_env_bool_optional(dotenv, "AKVAN_MODEL_SUPPORTS_VISION"),
         akvan_api_key=_env_value(dotenv, "AKVAN_API_KEY"),
         akvan_backend_url=_env_value(
             dotenv, "AKVAN_BACKEND_URL", DEFAULT_AKVAN_BACKEND_URL
@@ -246,6 +267,11 @@ def load_settings(
         raise ValueError("AKVAN_APPROVAL_TIMEOUT must be at least 1")
     if not 1 <= current.terminal_timeout <= 600:
         raise ValueError("AKVAN_TERMINAL_TIMEOUT must be between 1 and 600")
+    if current.vision_mode not in SUPPORTED_VISION_MODES:
+        raise ValueError(
+            "AKVAN_VISION_MODE must be one of: "
+            + ", ".join(sorted(SUPPORTED_VISION_MODES))
+        )
 
     if provider not in SUPPORTED_PROVIDERS:
         raise ValueError(
@@ -324,6 +350,9 @@ def load_settings(
         web_extract_backend=current.web_extract_backend,
         searxng_url=current.searxng_url,
         web_extract_summary_model=current.web_extract_summary_model,
+        vision_mode=current.vision_mode,
+        aux_vision_model=current.aux_vision_model,
+        model_supports_vision=current.model_supports_vision,
         akvan_api_key=akvan_api_key,
         akvan_backend_url=akvan_backend_url,
     )

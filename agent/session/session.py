@@ -20,7 +20,12 @@ from agent.memory.store import MemoryStore
 from agent.knowledge.config import load_knowledge_config
 from agent.knowledge.review import persisted_review_batch, spawn_knowledge_review
 from agent.knowledge.store import KnowledgeStore
-from agent.messages import Message, parse_tool_result_content, tool_message_name
+from agent.messages import (
+    Message,
+    extract_message_text,
+    parse_tool_result_content,
+    tool_message_name,
+)
 from agent.prompts import PromptBuilder, PromptSnapshot
 from agent.providers.base import Provider
 from agent.session.persistence import PersistenceCoordinator
@@ -243,7 +248,7 @@ class AgentSession:
             project_root=self.prompt.builder.project_root,
             memory_store=self.prompt.memory_store,
             knowledge_user_messages=lambda: [
-                str(message.get("content") or "")
+                extract_message_text(message.get("content"))
                 for message in self.messages
                 if message.get("role") == "user"
             ],

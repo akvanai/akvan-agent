@@ -113,6 +113,9 @@ class DeepSeekProvider(Provider):
     def needs_reasoning_content_pad(self, model: str) -> bool:
         return model_supports_thinking(model)
 
+    def supports_vision(self, model: str) -> bool:
+        return False
+
     def list_models(self) -> list[ModelInfo]:
         try:
             response = self._client.get(

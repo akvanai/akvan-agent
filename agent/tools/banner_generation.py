@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.storage.permissions import ensure_private_dir, ensure_private_file, write_private_file
-from agent.tools.base import Tool
+from agent.tools.base import Tool, ToolImage, ToolResult
 from agent.tools.browser_runtime.client import BrowserRuntimeClient
 from agent.tools.browser_runtime.config import BANNER_SIZE_PRESETS, banner_generation_config
 
@@ -379,7 +379,7 @@ def build_banner_generation_tools(*, project_root: Path | None = None) -> tuple[
         data: dict[str, Any] | None = None,
         size: dict[str, Any] | None = None,
         output_slug: str | None = None,
-    ) -> str:
+    ) -> ToolResult:
         result = render_template(
             template or str(cfg["default_template"]),
             data=data,
@@ -387,7 +387,20 @@ def build_banner_generation_tools(*, project_root: Path | None = None) -> tuple[
             output_slug=output_slug,
             project_root=project_root,
         )
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        images: tuple[ToolImage, ...] = ()
+        output_path = result.get("output_path")
+        if isinstance(output_path, str) and output_path.strip():
+            images = (
+                ToolImage(
+                    path=output_path,
+                    mime="image/png",
+                    question="Visually QA this rendered banner.",
+                ),
+            )
+        return ToolResult(
+            json.dumps(result, ensure_ascii=False, indent=2),
+            images=images,
+        )
 
     return (
         Tool(

@@ -2,6 +2,23 @@
 
 All notable changes to Akvan Agent are documented in this file.
 
+## [0.2.0] - 2026-07-23
+
+### Added
+
+- **Vision support** — native multimodal images or auxiliary text descriptions,
+  depending on provider/model capability (`AKVAN_VISION_MODE=auto|native|aux|off`).
+- **`vision_analyze` tool** — analyze a local image path or `http(s)` URL; pixels
+  are attached on vision-capable models, otherwise an aux vision model describes them.
+- **Telegram image input** — photos/documents downloaded and passed into the agent turn.
+- **CLI image paths** — extract local image paths from user text and attach them to the turn.
+- Browser screenshots and banner generation results can attach images into the model loop.
+- OpenAI Codex provider multimodal content formatting for vision turns.
+- Context compression prunes historical image parts; multimodal tool results keep images
+  until compaction.
+- Config: `AKVAN_AUX_VISION_MODEL` (default `openai/gpt-4o-mini`) and optional
+  `AKVAN_MODEL_SUPPORTS_VISION` override.
+
 ## [0.1.0] - Unreleased
 
 ### Added

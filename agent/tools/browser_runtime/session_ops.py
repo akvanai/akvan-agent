@@ -104,6 +104,9 @@ class BrowserSession:
     def snapshot(self, *, full: bool = False) -> dict[str, Any]:
         return self._call(lambda: self._snapshot_unlocked(full=full))
 
+    def screenshot(self, *, full: bool = True) -> dict[str, Any]:
+        return self._call(lambda: self._screenshot_unlocked(full=full))
+
     def click(self, ref: str) -> dict[str, Any]:
         return self._call(lambda: self._click_unlocked(ref))
 
@@ -237,6 +240,29 @@ class BrowserSession:
             "snapshot": text,
             "element_count": len(refs),
             "truncated": truncated,
+            "url": status.get("url", ""),
+            "title": status.get("title", ""),
+            "profile": status.get("profile", ""),
+        }
+
+    def _screenshot_unlocked(self, *, full: bool = True) -> dict[str, Any]:
+        import base64
+
+        page = self._require_page()
+        png = page.screenshot(
+            type="png",
+            full_page=bool(full),
+            animations="disabled",
+        )
+        self._touch_unlocked()
+        status = self._status_unlocked()
+        viewport = page.viewport_size or {}
+        return {
+            "ok": True,
+            "png_base64": base64.b64encode(png).decode("ascii"),
+            "full": bool(full),
+            "width": viewport.get("width"),
+            "height": viewport.get("height"),
             "url": status.get("url", ""),
             "title": status.get("title", ""),
             "profile": status.get("profile", ""),

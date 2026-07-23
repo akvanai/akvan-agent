@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from agent.tools.base import Tool
+from agent.tools.base import Tool, ToolImage, ToolResult
 from agent.tools.browser_runtime.client import BrowserRuntimeClient, BrowserRuntimeError
 from agent.tools.browser_runtime.config import browser_config, is_docker_browser_runtime
 from agent.tools.browser_runtime.profiles import (
@@ -17,6 +17,7 @@ from agent.tools.browser_runtime.profiles import (
     resolve_profile_storage_path,
 )
 from agent.tools.browser_runtime.upload_paths import UploadPathError, encode_upload_files
+from agent.vision.encode import write_png_bytes
 
 
 def _client(*, project_root: Path | None = None) -> BrowserRuntimeClient:
@@ -112,6 +113,53 @@ def build_browser_tools(*, project_root: Path | None = None) -> tuple[Tool, ...]
         except BrowserRuntimeError as exc:
             return _runtime_error(exc)
         return _dumps(result)
+
+    def browser_vision(question: str = "", full: bool = True) -> ToolResult:
+        try:
+            result = _client(project_root=project_root).post(
+                "/browser/screenshot", {"full": bool(full)}
+            )
+        except BrowserRuntimeError as exc:
+            return ToolResult(_runtime_error(exc))
+        if not result.get("ok"):
+            return ToolResult(_dumps(result if isinstance(result, dict) else {"ok": False}))
+        encoded = result.get("png_base64")
+        if not isinstance(encoded, str) or not encoded.strip():
+            return ToolResult(
+                _dumps({"ok": False, "error": "Browser runtime did not return a screenshot."})
+            )
+        import base64
+
+        try:
+            png = base64.b64decode(encoded, validate=True)
+        except ValueError as exc:
+            return ToolResult(
+                _dumps({"ok": False, "error": f"Invalid screenshot payload: {exc}"})
+            )
+        path = write_png_bytes(png, prefix="browser")
+        payload = {
+            "ok": True,
+            "screenshot_path": str(path),
+            "question": question or "",
+            "full": bool(full),
+            "url": result.get("url", ""),
+            "title": result.get("title", ""),
+            "note": (
+                "Screenshot attached for the model. On vision-capable models the "
+                "pixels are included in this tool result; otherwise an auxiliary "
+                "vision model describes it."
+            ),
+        }
+        return ToolResult(
+            _dumps(payload),
+            images=(
+                ToolImage(
+                    path=str(path),
+                    mime="image/png",
+                    question=question or "",
+                ),
+            ),
+        )
 
     def browser_click(ref: str) -> str:
         try:
@@ -236,7 +284,8 @@ def build_browser_tools(*, project_root: Path | None = None) -> tuple[Tool, ...]
             description=(
                 "Get an accessibility-tree snapshot of the current page with @eN refs "
                 "for interactive elements. Use refs with browser_click / browser_type. "
-                "Refs are only valid until the next navigation or interaction."
+                "Refs are only valid until the next navigation or interaction. "
+                "For visual inspection (CAPTCHAs, layouts, images), use browser_vision."
             ),
             parameters={
                 "type": "object",
@@ -244,6 +293,31 @@ def build_browser_tools(*, project_root: Path | None = None) -> tuple[Tool, ...]
                 "additionalProperties": False,
             },
             run=browser_snapshot,
+        ),
+        Tool(
+            name="browser_vision",
+            description=(
+                "Take a screenshot of the current browser page for visual inspection. "
+                "On vision-capable models, the screenshot pixels are returned in the "
+                "tool result so the model can see the page. On text-only models, an "
+                "auxiliary vision model describes the screenshot. Use when the "
+                "accessibility snapshot is insufficient (CAPTCHAs, images, complex layouts)."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "What to look for or answer about the page visually.",
+                    },
+                    "full": {
+                        "type": "boolean",
+                        "description": "Capture the full scrollable page (default true).",
+                    },
+                },
+                "additionalProperties": False,
+            },
+            run=browser_vision,
         ),
         Tool(
             name="browser_click",

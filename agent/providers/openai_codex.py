@@ -245,6 +245,72 @@ class OpenAICodexProvider(Provider):
         }
 
 
+def _content_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+        return "\n".join(parts)
+    return str(content or "")
+
+
+def _image_data_urls(content: object) -> list[str]:
+    if not isinstance(content, list):
+        return []
+    urls: list[str] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        kind = item.get("type")
+        if kind == "image_url":
+            image_url = item.get("image_url")
+            if isinstance(image_url, dict):
+                url = image_url.get("url")
+                if isinstance(url, str) and url.strip():
+                    urls.append(url)
+        elif kind == "input_image":
+            url = item.get("image_url")
+            if isinstance(url, str) and url.strip():
+                urls.append(url)
+            image_url = item.get("image_url")
+            if isinstance(image_url, dict):
+                nested = image_url.get("url")
+                if isinstance(nested, str) and nested.strip():
+                    urls.append(nested)
+    return urls
+
+
+def _responses_user_content(content: object) -> list[dict[str, object]]:
+    if isinstance(content, list):
+        parts: list[dict[str, object]] = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            kind = item.get("type")
+            if kind == "text" and isinstance(item.get("text"), str):
+                parts.append({"type": "input_text", "text": item["text"]})
+            elif kind == "image_url":
+                image_url = item.get("image_url")
+                url = ""
+                if isinstance(image_url, dict):
+                    url = str(image_url.get("url") or "")
+                elif isinstance(image_url, str):
+                    url = image_url
+                if url:
+                    parts.append({"type": "input_image", "image_url": url})
+            elif kind == "input_text" and isinstance(item.get("text"), str):
+                parts.append({"type": "input_text", "text": item["text"]})
+            elif kind == "input_image":
+                parts.append(item)
+        if parts:
+            return parts
+    text = _content_text(content)
+    return [{"type": "input_text", "text": text}]
+
+
 def _responses_payload(
     messages: Sequence[Message],
     model: str,
@@ -256,27 +322,53 @@ def _responses_payload(
         role = str(message.get("role") or "user")
         content = message.get("content")
         if role == "system":
-            if isinstance(content, str) and content.strip():
-                instructions.append(content.strip())
+            text = _content_text(content)
+            if text.strip():
+                instructions.append(text.strip())
             continue
         if role == "tool":
             input_items.append(
                 {
                     "type": "function_call_output",
                     "call_id": str(message.get("tool_call_id") or ""),
-                    "output": str(content or ""),
+                    "output": _content_text(content),
                 }
             )
+            # Responses API function_call_output is text-only; attach images as
+            # immediate input_image items so the model still sees the pixels.
+            image_urls = _image_data_urls(content)
+            if image_urls:
+                image_parts: list[dict[str, object]] = [
+                    {
+                        "type": "input_text",
+                        "text": "Image(s) from the previous tool result:",
+                    }
+                ]
+                for url in image_urls:
+                    image_parts.append({"type": "input_image", "image_url": url})
+                input_items.append({"role": "user", "content": image_parts})
             continue
         if role not in {"user", "assistant"}:
             role = "user"
-        text_type = "input_text" if role == "user" else "output_text"
-        input_items.append(
-            {
-                "role": role,
-                "content": [{"type": text_type, "text": str(content or "")}],
-            }
-        )
+        if role == "user":
+            input_items.append(
+                {
+                    "role": role,
+                    "content": _responses_user_content(content),
+                }
+            )
+        else:
+            input_items.append(
+                {
+                    "role": role,
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": _content_text(content),
+                        }
+                    ],
+                }
+            )
         tool_calls = message.get("tool_calls")
         if role == "assistant" and isinstance(tool_calls, list):
             for call in tool_calls:

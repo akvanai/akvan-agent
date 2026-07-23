@@ -76,6 +76,9 @@ class RuntimeHandler(BaseHTTPRequestHandler):
         if self.path == "/browser/snapshot":
             self._handle_browser_snapshot(payload)
             return
+        if self.path == "/browser/screenshot":
+            self._handle_browser_screenshot(payload)
+            return
         if self.path == "/browser/click":
             self._handle_browser_click(payload)
             return
@@ -170,6 +173,17 @@ class RuntimeHandler(BaseHTTPRequestHandler):
         full = bool(payload.get("full") or False)
         try:
             result = self._session().snapshot(full=full)
+        except Exception as exc:  # noqa: BLE001
+            self._send_json(500, {"ok": False, "error": str(exc)})
+            return
+        self._send_json(200, result)
+
+    def _handle_browser_screenshot(self, payload: dict[str, Any]) -> None:
+        full = payload.get("full")
+        if full is None:
+            full = True
+        try:
+            result = self._session().screenshot(full=bool(full))
         except Exception as exc:  # noqa: BLE001
             self._send_json(500, {"ok": False, "error": str(exc)})
             return

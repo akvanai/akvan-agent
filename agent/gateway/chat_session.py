@@ -192,6 +192,8 @@ class ChatSessionService:
         user_input: str,
         chat_id: str,
         approval_flow: ApprovalFlowService,
+        *,
+        image_paths: tuple[str, ...] = (),
     ) -> None:
         preferences = self.preferences(chat_id)
         transport = preferences.get(
@@ -216,9 +218,26 @@ class ChatSessionService:
             ),
         )
 
+        turn_context = None
+        if image_paths:
+            from agent.messages import TurnContext
+            from agent.vision.attach import build_user_provider_content
+
+            provider_content = build_user_provider_content(
+                user_input,
+                image_paths,
+                provider=session.provider,
+                model=session.model,
+            )
+            turn_context = TurnContext(provider_user_content=provider_content)
+
         def run_sync() -> None:
             try:
-                events = session.loop.stream_events(session.messages, user_input)
+                events = session.loop.stream_events(
+                    session.messages,
+                    user_input,
+                    turn_context=turn_context,
+                )
                 for event in events:
                     control.state = event.state
                     if control.cancel.is_set():
