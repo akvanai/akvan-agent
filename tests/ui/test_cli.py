@@ -14,6 +14,7 @@ import pytest
 from rich.console import Console
 from prompt_toolkit.application import Application
 
+from agent import __version__
 from agent.events import AgentState
 from agent.messages import Completion
 from agent.prompts import PromptBuilder
@@ -87,7 +88,7 @@ def test_cli_header_and_message_render() -> None:
     rendered = output.getvalue()
 
     assert "AKVAN AGENT" in rendered
-    assert "Akvan Agent v0.1.0" in rendered
+    assert f"Akvan Agent v{__version__}" in rendered
     assert "openai/gpt-4o-mini" in rendered
     assert "Tools" in rendered
     assert "Skills" in rendered
