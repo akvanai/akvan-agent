@@ -359,3 +359,49 @@ def test_codex_cli_mode_reports_missing_session(tmp_path: Path) -> None:
 
     with pytest.raises(ProviderError, match="Codex CLI session"):
         load_codex_cli_token(missing)
+
+
+def test_openai_codex_stream_http_error_includes_detail() -> None:
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(
+                400,
+                json={"error": {"message": "context length exceeded"}},
+            )
+        )
+    )
+    provider = OpenAICodexProvider(api_key="openai-key", client=client)
+
+    with pytest.raises(ProviderError, match="context length exceeded") as exc_info:
+        list(
+            provider.stream_events(
+                messages=[{"role": "user", "content": "hello"}],
+                model="gpt-5-codex",
+            )
+        )
+
+    assert "StreamClosed" not in str(exc_info.value)
+    assert "HTTP 400" in str(exc_info.value)
+
+
+def test_openai_codex_cli_stream_http_error_includes_detail() -> None:
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(
+                400,
+                json={"error": {"message": "invalid_request"}},
+            )
+        )
+    )
+    provider = OpenAICodexProvider(api_key="cli-token", auth_mode="cli", client=client)
+
+    with pytest.raises(ProviderError, match="invalid_request") as exc_info:
+        list(
+            provider.stream_events(
+                messages=[{"role": "user", "content": "hello"}],
+                model="gpt-5.5",
+            )
+        )
+
+    assert "StreamClosed" not in str(exc_info.value)
+    assert "HTTP 400" in str(exc_info.value)

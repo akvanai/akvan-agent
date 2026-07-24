@@ -6,6 +6,8 @@ Checks iteration limits and conversation-history updates.
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from agent.agent import AgentLoop, AgentLoopError
@@ -370,6 +372,144 @@ def test_agent_streams_text_after_streamed_tool_call_deltas() -> None:
     assert list(loop.stream_turn(messages, "use testy")) == ["do", "ne"]
     assert messages[-1] == {"role": "assistant", "content": "done"}
     assert messages[-2]["name"] == "testy"
+
+
+def test_agent_loop_stops_when_cancel_set_between_chunks() -> None:
+    cancel = threading.Event()
+
+    class ChunkProvider(FakeProvider):
+        def stream_events(self, messages, model, options=None):
+            self.calls += 1
+            yield ProviderStreamEvent(content="hel")
+            cancel.set()
+            yield ProviderStreamEvent(content="lo")
+
+    provider = ChunkProvider()
+    loop = AgentLoop(provider=provider, model="model")
+    messages: list[Message] = []
+    original = list(messages)
+
+    events = list(loop.stream_events(messages, "hi", cancel=cancel))
+
+    assert events[-1].state == AgentState.STOPPED
+    assert AgentState.COMPLETED not in {event.state for event in events}
+    del messages[len(original) :]
+    assert messages == original
+
+
+def test_agent_loop_stop_wins_at_provider_completion_boundary() -> None:
+    cancel = threading.Event()
+
+    class BoundaryProvider(FakeProvider):
+        def stream_events(self, messages, model, options=None):
+            yield ProviderStreamEvent(content="complete-looking")
+            cancel.set()
+
+    messages: list[Message] = []
+    events = list(
+        AgentLoop(provider=BoundaryProvider(), model="model").stream_events(
+            messages, "hi", cancel=cancel
+        )
+    )
+
+    assert events[-1].state == AgentState.STOPPED
+    assert AgentState.COMPLETED not in {event.state for event in events}
+    assert messages == [{"role": "user", "content": "hi"}]
+
+
+def test_cancelled_auto_compaction_is_not_persisted() -> None:
+    cancel = threading.Event()
+    persisted: list[list[Message]] = []
+
+    class CancellingProvider(FakeProvider):
+        def stream_events(self, messages, model, options=None):
+            cancel.set()
+            yield ProviderStreamEvent(content="ignored")
+
+    config = ContextConfig(
+        context_length=20_000,
+        max_output_tokens=0,
+        compression_threshold=0.05,
+        protect_first_messages=1,
+        protect_recent_ratio=0.05,
+    )
+    loop = AgentLoop(
+        provider=CancellingProvider(),
+        model="tiny",
+        context_config=config,
+        compaction_callback=lambda messages: persisted.append(list(messages)),
+    )
+    messages: list[Message] = [{"role": "system", "content": "system"}]
+    for index in range(8):
+        messages.extend(
+            (
+                {"role": "user", "content": f"request {index} " + "x" * 2_000},
+                {"role": "assistant", "content": f"answer {index} " + "y" * 2_000},
+            )
+        )
+
+    events = list(
+        loop.stream_events(
+            messages,
+            "cancel this turn",
+            cancel=cancel,
+            defer_compaction_persistence=True,
+        )
+    )
+
+    assert events[-1].state == AgentState.STOPPED
+    assert loop.last_compaction is not None and loop.last_compaction.changed
+    assert persisted == []
+
+
+def test_agent_loop_stops_before_tool_invocation() -> None:
+    cancel = threading.Event()
+    invoked: list[bool] = []
+
+    tool = Tool(
+        name="testy",
+        description="Test-only echo tool.",
+        parameters={
+            "type": "object",
+            "properties": {"value": {"type": "string"}},
+            "required": ["value"],
+            "additionalProperties": False,
+        },
+        run=lambda value: (invoked.append(True), f"Testy: {value}")[1],
+    )
+    tool_call = Completion(
+        message={
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "testy",
+                        "arguments": "{\"value\":\"hello\"}",
+                    },
+                }
+            ],
+        }
+    )
+
+    class ToolProvider(FakeProvider):
+        def complete(self, messages, model, options=None):
+            self.calls += 1
+            cancel.set()
+            return tool_call
+
+    loop = AgentLoop(provider=ToolProvider(), model="model", tools=(tool,))
+    messages: list[Message] = []
+    original_len = len(messages)
+
+    events = list(loop.stream_events(messages, "use testy", cancel=cancel))
+
+    assert events[-1].state == AgentState.STOPPED
+    assert not invoked
+    del messages[original_len:]
+    assert messages == []
 
 
 def test_agent_loop_pads_reasoning_content_for_deepseek_tool_calls() -> None:

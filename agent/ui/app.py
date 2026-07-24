@@ -380,41 +380,54 @@ def main(argv: list[str] | None = None) -> int:
                 SessionCommandKind.KNOWLEDGE,
                 SessionCommandKind.SESSIONS,
                 SessionCommandKind.YOLO,
+                SessionCommandKind.STOP,
                 SessionCommandKind.ERROR,
             }:
                 render_user_message(console, user_input)
                 render_markdown_message(console, "AKVAN", command.message or "")
                 continue
 
-            transcript.append(("user", user_input))
             render_user_message(console, user_input)
 
             session.begin_turn()
-            turn_start = len(session.messages)
+            turn_messages = session.turn_messages()
             try:
                 console.print(Spinner().render())
-                answer = render_streaming_response(
+                turn = render_streaming_response(
                     console,
                     session.loop,
-                    session.messages,
+                    turn_messages,
                     command.raw_input,
                     turn_context=command.turn_context,
+                    defer_compaction_persistence=True,
                 )
             except KeyboardInterrupt:
                 console.print()
-                return 0
+                render_markdown_message(console, "AKVAN", "Stopped.")
+                session.cancel_turn()
+                session.maybe_spawn_background_review(interrupted=True)
+                continue
             except (AgentLoopError, ProviderError) as exc:
+                session.cancel_turn()
                 print_error(console, f"[bold #ff0000]Error:[/] {exc}")
                 continue
 
+            if turn.stopped:
+                render_markdown_message(console, "AKVAN", "Stopped.")
+                session.cancel_turn()
+                session.maybe_spawn_background_review(interrupted=True)
+                continue
+
+            turn_start = session.latest_turn_start(turn_messages)
+            session.commit_turn_messages(turn_messages)
+            session.complete_turn()
             session.scan_turn_for_memory_tool_use(turn_start)
             session.scan_turn_for_skill_tool_use(turn_start)
             session.record_turn_tool_iterations(
                 AgentSession.count_turn_tool_iterations(session.messages, turn_start)
             )
-            session.persist_new_messages()
             session.maybe_spawn_background_review()
-            transcript.append(("assistant", answer))
+            transcript.extend((("user", user_input), ("assistant", turn.content)))
     finally:
         provider.close()
 

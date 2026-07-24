@@ -88,13 +88,16 @@ def test_openrouter_stream_http_error_includes_detail() -> None:
     )
     provider = OpenRouterProvider("test-key", client=client)
 
-    with pytest.raises(ProviderError, match="tools unsupported"):
+    with pytest.raises(ProviderError, match="tools unsupported") as exc_info:
         list(
             provider.stream_complete(
                 messages=[{"role": "user", "content": "hello"}],
                 model="model",
             )
         )
+
+    assert "StreamClosed" not in str(exc_info.value)
+    assert "HTTP 400" in str(exc_info.value)
 
 
 def test_openrouter_stream_closed_falls_back_to_complete() -> None:

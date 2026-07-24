@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from io import StringIO
 import threading
 
@@ -17,9 +18,10 @@ from prompt_toolkit.layout import HSplit, Layout, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.widgets import TextArea
 
-from agent.agent import AgentLoop
+from agent.agent import AgentLoop, AgentLoopError
 from agent.events import AgentState
 from agent.messages import Message, TurnContext
+from agent.providers.base import ProviderError
 from agent.session import AgentSession
 from agent.tools.approval import ApprovalChoice, ApprovalRequest
 from agent.ui.commands import SessionCommandKind, resolve_input
@@ -28,6 +30,7 @@ from agent.ui.rendering import (
     ask_user,
     build_prompt_input_shell,
     estimate_input_height,
+    print_error,
     render_markdown_message,
     render_user_message,
 )
@@ -39,6 +42,43 @@ from agent.ui.steps import (
     render_persisted_turn,
     render_steps_for_chat_view,
 )
+
+
+@dataclass(frozen=True)
+class TurnRenderResult:
+    content: str
+    stopped: bool = False
+
+
+def _follow_latest_fragments(rendered: str) -> list[tuple[str, str]]:
+    """Convert ANSI output and keep the live viewport anchored at its end."""
+
+    fragments = list(to_formatted_text(ANSI(rendered)))
+    fragments.append(("[SetCursorPosition]", ""))
+    return fragments
+
+
+def _call_in_app_loop(app: Application, callback: Callable[[], None]) -> bool:
+    """Schedule UI work when prompt-toolkit's event loop is still available."""
+
+    event_loop = app.loop
+    if event_loop is None:
+        return False
+    try:
+        event_loop.call_soon_threadsafe(callback)
+    except RuntimeError:
+        return False
+    return True
+
+
+def _exit_app_if_running(app: Application) -> bool:
+    """Exit a running UI once, tolerating concurrent stop and completion."""
+
+    future = app.future
+    if future is None or future.done():
+        return False
+    app.exit(result=None)
+    return True
 
 
 class _ApprovalController:
@@ -97,6 +137,24 @@ class _ApprovalController:
         self.choose(ApprovalChoice.DENY)
 
 
+def _approval_key_insert(
+    approvals: _ApprovalController,
+    key: str,
+    *,
+    choice: ApprovalChoice | None = None,
+    index: int | None = None,
+) -> str | None:
+    """Return `key` to insert when the shortcut did not resolve an approval."""
+
+    if index is not None:
+        handled = approvals.choose_index(index)
+    elif choice is not None:
+        handled = approvals.choose(choice)
+    else:
+        handled = False
+    return None if handled else key
+
+
 def _approval_panel(request: ApprovalRequest) -> Panel:
     labels = {
         ApprovalChoice.ONCE: "Allow once",
@@ -153,24 +211,36 @@ def render_streaming_response(
     user_input: str,
     *,
     turn_context: TurnContext | None = None,
-) -> str:
+    cancel: threading.Event | None = None,
+    defer_compaction_persistence: bool = False,
+) -> TurnRenderResult:
     """Stream in a temporary bottom-anchored UI, then persist the answer."""
+
+    cancel = cancel if cancel is not None else threading.Event()
 
     if not console.is_terminal:
         step_log = TurnStepLog.from_tools(loop.tools)
         for event in loop.stream_events(
-            messages, user_input, turn_context=turn_context
+            messages,
+            user_input,
+            turn_context=turn_context,
+            cancel=cancel,
+            defer_compaction_persistence=defer_compaction_persistence,
         ):
             step_log.feed(event)
+            if event.state == AgentState.STOPPED:
+                return TurnRenderResult(content="", stopped=True)
         content = step_log.answer_content()
         render_persisted_turn(console, step_log)
-        return content
+        return TurnRenderResult(content=content)
 
     step_log = TurnStepLog.from_tools(loop.tools)
     error: Exception | None = None
     lock = threading.Lock()
     approvals = _ApprovalController()
     spinner_running = threading.Event()
+    busy_hint = ""
+    worker_done = threading.Event()
 
     def response_fragments():
         with lock:
@@ -182,13 +252,18 @@ def render_streaming_response(
             approval_request=request,
             approval_panel_renderer=_approval_panel,
         )
-        return list(to_formatted_text(ANSI(rendered)))
+        return _follow_latest_fragments(rendered)
 
     def status_fragments():
         with lock:
             log = step_log
+            hint = busy_hint
         request = approvals.request
-        if request is not None:
+        if cancel.is_set():
+            label = "stopping"
+        elif hint:
+            label = hint
+        elif request is not None:
             label = f"approval: press 1–{len(request.choices)}"
         elif log._text_buffer or any(
             step.kind == StepKind.ANSWER for step in log.steps
@@ -223,35 +298,66 @@ def render_streaming_response(
     input_area = TextArea(
         height=1,
         prompt="❯ ",
-        read_only=True,
+        read_only=False,
         dont_extend_height=True,
         style="class:input-area",
     )
     input_shell = build_prompt_input_shell(input_area)
     bindings = KeyBindings()
 
+    def request_stop(app: Application) -> None:
+        approvals.cancel()
+        cancel.set()
+        spinner_running.clear()
+        _exit_app_if_running(app)
+
     @bindings.add("c-c")
     def _(event) -> None:
-        approvals.cancel()
-        event.app.exit(exception=KeyboardInterrupt)
+        request_stop(event.app)
+
+    @bindings.add("enter")
+    def _(event) -> None:
+        nonlocal busy_hint
+        text = input_area.text.strip()
+        if text == "/stop":
+            input_area.text = ""
+            request_stop(event.app)
+            return
+        if text:
+            busy_hint = "busy — Ctrl+C or /stop to cancel"
+            input_area.text = ""
+            event.app.invalidate()
 
     for number in range(1, 5):
-        def choose_number(event, index=number - 1) -> None:
-            if approvals.choose_index(index):
+        def choose_number(event, index=number - 1, digit=str(number)) -> None:
+            insert = _approval_key_insert(approvals, digit, index=index)
+            if insert is None:
                 event.app.invalidate()
+                return
+            event.current_buffer.insert_text(insert)
 
         bindings.add(str(number))(choose_number)
 
     @bindings.add("y")
     def _(event) -> None:
-        if approvals.choose(ApprovalChoice.ONCE):
+        insert = _approval_key_insert(
+            approvals, "y", choice=ApprovalChoice.ONCE
+        )
+        if insert is None:
             event.app.invalidate()
+            return
+        event.current_buffer.insert_text(insert)
 
     @bindings.add("n")
     @bindings.add("d")
     def _(event) -> None:
-        if approvals.choose(ApprovalChoice.DENY):
+        insert = _approval_key_insert(
+            approvals, event.data, choice=ApprovalChoice.DENY
+        )
+        if insert is None:
             event.app.invalidate()
+            return
+        event.current_buffer.insert_text(insert)
 
     layout = Layout(
         HSplit(
@@ -279,7 +385,11 @@ def render_streaming_response(
         spinner_running.set()
         try:
             for event in loop.stream_events(
-                messages, user_input, turn_context=turn_context
+                messages,
+                user_input,
+                turn_context=turn_context,
+                cancel=cancel,
+                defer_compaction_persistence=defer_compaction_persistence,
             ):
                 with lock:
                     step_log.feed(event)
@@ -287,16 +397,20 @@ def render_streaming_response(
                         spinner_running.set()
                     else:
                         spinner_running.clear()
-                app.invalidate()
+                try:
+                    app.invalidate()
+                except RuntimeError:
+                    pass
         except Exception as exc:
             error = exc
         finally:
             spinner_running.clear()
-            app.loop.call_soon_threadsafe(lambda: app.exit(result=None))
+            worker_done.set()
+            _call_in_app_loop(app, lambda: _exit_app_if_running(app))
 
     def _invalidate_spinner() -> None:
         while spinner_running.is_set():
-            app.loop.call_soon_threadsafe(app.invalidate)
+            _call_in_app_loop(app, app.invalidate)
             spinner_running.wait(0.08)
 
     app.pre_run_callables.append(
@@ -311,14 +425,17 @@ def render_streaming_response(
     finally:
         approvals.cancel()
         loop.approval_manager.set_callback(None)
+        worker_done.wait(timeout=0.2)
 
     with lock:
         turn_error = error
         content = step_log.answer_content()
     if turn_error is not None:
         raise turn_error
+    if cancel.is_set():
+        return TurnRenderResult(content=content, stopped=True)
     render_persisted_turn(console, step_log)
-    return content
+    return TurnRenderResult(content=content)
 
 
 def _legacy_steps_from_entry(entry: dict[str, object]) -> list[TurnStep] | None:
@@ -468,25 +585,45 @@ def _run_plain_session(console: Console, session: AgentSession) -> int:
             SessionCommandKind.YOLO,
             SessionCommandKind.COMPRESS,
             SessionCommandKind.USAGE,
+            SessionCommandKind.STOP,
             SessionCommandKind.ERROR,
         }:
             render_markdown_message(console, "AKVAN", command.message or "")
             continue
         session.begin_turn()
-        turn_start = len(session.messages)
-        answer = render_streaming_response(
-            console,
-            session.loop,
-            session.messages,
-            command.raw_input,
-            turn_context=command.turn_context,
-        )
+        turn_messages = session.turn_messages()
+        try:
+            turn = render_streaming_response(
+                console,
+                session.loop,
+                turn_messages,
+                command.raw_input,
+                turn_context=command.turn_context,
+                defer_compaction_persistence=True,
+            )
+        except KeyboardInterrupt:
+            console.print()
+            render_markdown_message(console, "AKVAN", "Stopped.")
+            session.cancel_turn()
+            session.maybe_spawn_background_review(interrupted=True)
+            continue
+        except (AgentLoopError, ProviderError) as exc:
+            session.cancel_turn()
+            print_error(console, f"[bold #ff0000]Error:[/] {exc}")
+            continue
+        if turn.stopped:
+            render_markdown_message(console, "AKVAN", "Stopped.")
+            session.cancel_turn()
+            session.maybe_spawn_background_review(interrupted=True)
+            continue
+        turn_start = session.latest_turn_start(turn_messages)
+        session.commit_turn_messages(turn_messages)
+        session.complete_turn()
         session.scan_turn_for_memory_tool_use(turn_start)
         session.scan_turn_for_skill_tool_use(turn_start)
         session.record_turn_tool_iterations(
             AgentSession.count_turn_tool_iterations(session.messages, turn_start)
         )
-        session.persist_new_messages()
 
         def _notify(message: str | None) -> None:
             if not message:
@@ -498,7 +635,7 @@ def _run_plain_session(console: Console, session: AgentSession) -> int:
             )
 
         session.maybe_spawn_background_review(on_complete=_notify)
-        transcript.extend((("user", user_input), ("assistant", answer)))
+        transcript.extend((("user", user_input), ("assistant", turn.content)))
 
 
 def run_interactive_session(

@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 class SessionCommandKind(str, Enum):
     TURN = "turn"
     EXIT = "exit"
+    STOP = "stop"
     YOLO = "yolo"
     RELOAD = "reload"
     SKILLS = "skills"
@@ -84,7 +85,7 @@ def resolve_input(session: "AgentSession", raw_input: str) -> SessionCommand:
             raw_input,
             message=message,
         )
-    if command_token in {"/exit", "/quit", "/reload", "/skills", "/yolo"}:
+    if command_token in {"/exit", "/quit", "/stop", "/reload", "/skills", "/yolo"}:
         if stripped != command_token:
             return SessionCommand(
                 SessionCommandKind.ERROR,
@@ -93,6 +94,12 @@ def resolve_input(session: "AgentSession", raw_input: str) -> SessionCommand:
             )
         if command_token in {"/exit", "/quit"}:
             return SessionCommand(SessionCommandKind.EXIT, raw_input)
+        if command_token == "/stop":
+            return SessionCommand(
+                SessionCommandKind.STOP,
+                raw_input,
+                message="Nothing is currently running.",
+            )
         if command_token == "/reload":
             return SessionCommand(SessionCommandKind.RELOAD, raw_input)
         if command_token == "/yolo":

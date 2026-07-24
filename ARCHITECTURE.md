@@ -19,18 +19,23 @@ Provider implementations ───→ Provider contract
 
 ## Package responsibilities
 
-- `agent.py` runs turns, executes tool calls, and emits lifecycle events.
+- `agent.py` runs turns, executes tool calls, emits lifecycle events, and propagates
+  cooperative cancellation through provider and tool boundaries.
 - `session/` owns process-local history via three coordinators — `PromptCoordinator`
   (frozen snapshots, memory-backed prompt inputs), `ToolCoordinator` (registry,
   approvals, resolved tools), and `PersistenceCoordinator` (SQLite identity and
-  message sync). `AgentSession` is a slim facade for factory wiring, cross-coordinator
-  `reload()`, and turn-level learning hooks.
+  message sync). `AgentSession` coordinates factory wiring, cross-coordinator
+  `reload()`, turn-level learning hooks, and transactional turn history. Each
+  in-flight turn works against an isolated transcript and counter snapshot; successful
+  turns atomically publish and persist that state, while stopped or failed turns
+  discard it.
 - `prompts/` discovers instructions and builds immutable prompt snapshots.
 - `agent/skills/` parses `SKILL.md`, indexes metadata, syncs bundled skills, exposes
   read tools (`skills_list`, `skill_view`) and write tool (`skill_manage`), and runs
   background skill review plus curator maintenance for agent-created skills.
 - Repo-root `skills/<category>/<name>/` holds bundled instruction packages (content only).
-- `tools/` defines the tool contract, result trust boundaries, and tool registry.
+- `tools/` defines the tool contract, cooperative cancellation hooks, result trust
+  boundaries, and tool registry.
 - `providers/` translates the provider-neutral contracts to model APIs.
 - `ui/` owns terminal commands, setup, chat state, rendering, and setup wizards.
 - `gateway/` owns platform-neutral messaging orchestration via four coordinators —
@@ -114,3 +119,17 @@ buttons, callbacks, message editing, typing, draft streaming, and message size.
 Gateways run in separate processes selected with `--gateway-id`. PID and log
 files are namespaced by gateway id, while session bindings and preferences share
 the existing SQLite store under `(platform, chat_id)`.
+
+## Turn cancellation
+
+The CLI and gateways use the same cancellation event and `AgentState.STOPPED`
+lifecycle state. Cancellation is checked between provider chunks, tool calls, and
+agent-loop iterations. Tools with blocking work can provide a cancellation-aware
+runner; the foreground terminal tool uses it to terminate its managed subprocess.
+Provider reads that cannot be aborted may finish in a detached worker, but their
+private transcript is never committed after cancellation.
+
+This isolation also makes auto-compaction transactional: compaction performed during
+an active turn is persisted only when that turn commits. Session learning counters
+are restored when a turn is cancelled, so stopped turns do not advance background
+memory, skill, or knowledge review schedules.

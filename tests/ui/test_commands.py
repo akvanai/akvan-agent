@@ -65,4 +65,8 @@ def test_session_commands_and_invalid_skill_warning(tmp_path: Path) -> None:
 
     assert resolve_input(session, "/reload now").kind == SessionCommandKind.ERROR
     assert resolve_input(session, "/missing").kind == SessionCommandKind.ERROR
+    stop = resolve_input(session, "/stop")
+    assert stop.kind == SessionCommandKind.STOP
+    assert stop.message == "Nothing is currently running."
+    assert resolve_input(session, "/stop now").kind == SessionCommandKind.ERROR
     assert session.prompt.snapshot.skills.warnings

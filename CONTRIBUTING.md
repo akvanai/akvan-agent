@@ -32,6 +32,10 @@ Implement `agent.providers.base.Provider` and register it. See `openrouter.py`,
 
 Add the tool in `agent/tools/` and register it in `agent/tools/registry.py`.
 Tools return `ToolResult` and may attach an `ApprovalPolicy` for sensitive operations.
+Long-running or blocking tools should also provide `Tool.cancel_run`, accepting the
+tool arguments and the turn's `threading.Event`. Check that event at safe boundaries,
+stop any owned work, and return a normal `ToolResult`. The foreground terminal tool is
+the reference implementation.
 
 ### Adding a Skill
 

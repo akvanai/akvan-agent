@@ -178,15 +178,21 @@ class OpenAICodexProvider(Provider):
                 json=payload,
                 headers=self._headers(),
             ) as response:
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    try:
+                        exc.response.read()
+                    except httpx.StreamError:
+                        pass
+                    detail = _response_error_detail(exc.response)
+                    raise ProviderError(
+                        f"OpenAI Codex request failed: {detail}"
+                    ) from exc
                 for line in response.iter_lines():
                     event = _parse_stream_line(line)
                     if event is not None:
                         yield event
-        except httpx.HTTPStatusError as exc:
-            exc.response.read()
-            detail = _response_error_detail(exc.response)
-            raise ProviderError(f"OpenAI Codex request failed: {detail}") from exc
         except httpx.HTTPError as exc:
             raise ProviderError(f"OpenAI Codex request failed: {exc}") from exc
 
@@ -226,15 +232,21 @@ class OpenAICodexProvider(Provider):
                 json=payload,
                 headers=self._headers(),
             ) as response:
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    try:
+                        exc.response.read()
+                    except httpx.StreamError:
+                        pass
+                    detail = _response_error_detail(exc.response)
+                    raise ProviderError(
+                        f"OpenAI Codex request failed: {detail}"
+                    ) from exc
                 for line in response.iter_lines():
                     event = _parse_responses_stream_line(line)
                     if event is not None:
                         yield event
-        except httpx.HTTPStatusError as exc:
-            exc.response.read()
-            detail = _response_error_detail(exc.response)
-            raise ProviderError(f"OpenAI Codex request failed: {detail}") from exc
         except httpx.HTTPError as exc:
             raise ProviderError(f"OpenAI Codex request failed: {exc}") from exc
 

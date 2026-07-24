@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
+import time
 from collections.abc import Mapping
 from pathlib import Path
 
 from agent.tools.approval import classify_terminal
 from agent.tools.base import Tool
 from agent.tools.presentation import ToolPresentation, detail_from_arg
-from agent.tools.process_manager import MAX_PROCESS_OUTPUT, ProcessManager
+from agent.tools.process_manager import ProcessManager
 
 
 def build_terminal_tools(
@@ -36,6 +38,8 @@ def build_terminal_tools(
         timeout: int | None = None,
         background: bool = False,
         pty: bool = False,
+        *,
+        _cancel: threading.Event | None = None,
     ) -> str:
         if not command.strip():
             raise ValueError("command must not be empty")
@@ -43,56 +47,42 @@ def build_terminal_tools(
         effective_timeout = default_timeout if timeout is None else timeout
         if effective_timeout < 1 or effective_timeout > 600:
             raise ValueError("timeout must be between 1 and 600 seconds")
-        if background or pty:
-            managed = process_manager.spawn(
-                command, workdir=cwd, pty_mode=pty
-            )
-            if background:
-                return json.dumps(managed.snapshot(), ensure_ascii=False)
-            result = process_manager.wait(
-                managed.session_id, timeout=effective_timeout
-            )
-            if result["running"]:
+
+        managed = process_manager.spawn(command, workdir=cwd, pty_mode=pty)
+        if background:
+            return json.dumps(managed.snapshot(), ensure_ascii=False)
+
+        deadline = time.monotonic() + effective_timeout
+        cancelled = False
+        timed_out = False
+        while managed.process.poll() is None:
+            if _cancel is not None and _cancel.wait(timeout=0.05):
+                cancelled = True
                 process_manager.kill(managed.session_id)
-                result = managed.snapshot()
-                result["timed_out"] = True
-            process_manager.close(managed.session_id)
-            return json.dumps(result, ensure_ascii=False)
-        try:
-            completed = subprocess.run(
-                ["/bin/bash", "-lc", command],
-                cwd=cwd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                timeout=effective_timeout,
-                check=False,
-            )
-            output = completed.stdout[-MAX_PROCESS_OUTPUT:].decode(
-                "utf-8", errors="replace"
-            )
-            return json.dumps(
-                {
-                    "command": command,
-                    "workdir": str(cwd),
-                    "exit_code": completed.returncode,
-                    "output": output,
-                    "truncated": len(completed.stdout) > MAX_PROCESS_OUTPUT,
-                },
-                ensure_ascii=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            output = (exc.stdout or b"")[-MAX_PROCESS_OUTPUT:].decode(
-                "utf-8", errors="replace"
-            )
-            return json.dumps(
-                {
-                    "command": command,
-                    "workdir": str(cwd),
-                    "timed_out": True,
-                    "output": output,
-                },
-                ensure_ascii=False,
-            )
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                process_manager.kill(managed.session_id)
+                break
+            try:
+                managed.process.wait(timeout=min(0.05, remaining))
+            except subprocess.TimeoutExpired:
+                continue
+
+        managed.reader_done.wait(timeout=0.5)
+        result = managed.snapshot()
+        if cancelled:
+            result["cancelled"] = True
+        if timed_out:
+            result["timed_out"] = True
+        process_manager.close(managed.session_id)
+        return json.dumps(result, ensure_ascii=False)
+
+    def terminal_cancel(
+        arguments: Mapping[str, object], cancel: threading.Event
+    ) -> str:
+        return terminal(**arguments, _cancel=cancel)
 
     def terminal_approval(arguments: Mapping[str, object]):
         command = arguments.get("command")
@@ -157,6 +147,7 @@ def build_terminal_tools(
                 style="bold #ffd166",
                 format_detail=lambda args: detail_from_arg(args, "command"),
             ),
+            cancel_run=terminal_cancel,
         ),
         Tool(
             "process",

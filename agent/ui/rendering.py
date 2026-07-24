@@ -29,7 +29,9 @@ from rich.rule import Rule
 from rich.text import Text
 from prompt_toolkit.application import Application
 from prompt_toolkit.filters import has_focus
+from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import HSplit, Layout, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
@@ -72,6 +74,16 @@ PROMPT_INPUT_STYLE = Style.from_dict(
         "completion-menu.multi-column-meta": TEXT_MUTED,
     }
 )
+
+_SHIFT_ENTER_SEQUENCES = ("\x1b[13;2u", "\x1b[27;2;13~")
+_KITTY_KEYBOARD_PUSH = "\x1b[>1u"
+_KITTY_KEYBOARD_POP = "\x1b[<u"
+for _sequence in _SHIFT_ENTER_SEQUENCES:
+    ANSI_SEQUENCES[_sequence] = Keys.ControlJ
+for _letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+    ANSI_SEQUENCES[f"\x1b[{ord(_letter.lower())};5u"] = getattr(
+        Keys, f"Control{_letter}"
+    )
 
 
 class Spinner:
@@ -294,7 +306,7 @@ def render_compact_header(
 
     console.print(
         Text(
-            "/learn · /skills · /reload · /exit · Esc+Enter newline",
+            "/learn · /skills · /stop · /reload · /exit · Shift+Enter newline",
             style=TEXT_MUTED,
         )
     )
@@ -417,6 +429,17 @@ def build_completions_panel(input_area: TextArea) -> CompletionsMenu:
     )
 
 
+def _set_enhanced_keyboard_reporting(
+    app: Application, *, enabled: bool
+) -> None:
+    """Push or restore enhanced terminal key reporting for modified Enter."""
+
+    app.output.write_raw(
+        _KITTY_KEYBOARD_PUSH if enabled else _KITTY_KEYBOARD_POP
+    )
+    app.output.flush()
+
+
 def run_prompt_footer(
     console: Console,
     *,
@@ -482,11 +505,7 @@ def run_prompt_footer(
     def insert_newline(event) -> None:
         event.current_buffer.insert_text("\n")
 
-    @bindings.add("escape", "enter")
-    def _(event) -> None:
-        insert_newline(event)
-
-    # Many terminals/IDEs encode Shift+Enter or Ctrl+Enter as LF.
+    # Terminals that distinguish Shift+Enter commonly encode it as LF (Ctrl-J).
     @bindings.add("c-j")
     def _(event) -> None:
         insert_newline(event)
@@ -540,7 +559,11 @@ def run_prompt_footer(
     # Keep scrollback messages separated from the status strip above the input.
     console.print()
     console.print()
-    return app.run()
+    _set_enhanced_keyboard_reporting(app, enabled=True)
+    try:
+        return app.run()
+    finally:
+        _set_enhanced_keyboard_reporting(app, enabled=False)
 
 
 def plain_status_fragments(
@@ -561,7 +584,7 @@ def plain_status_fragments(
                 ("class:status-value", f"ctx {context_percent:.0f}%"),
             ]
         )
-    fragments.append(("class:status-muted", " │ Esc+Enter newline"))
+    fragments.append(("class:status-muted", " │ Shift+Enter newline"))
     return fragments
 
 

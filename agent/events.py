@@ -15,6 +15,7 @@ class AgentState(str, Enum):
     AWAITING_APPROVAL = "awaiting_approval"
     RESPONDING = "responding"
     COMPLETED = "completed"
+    STOPPED = "stopped"
     FAILED = "failed"
 
 

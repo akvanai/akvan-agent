@@ -205,16 +205,22 @@ class DeepSeekProvider(Provider):
                 json=payload,
                 headers=self._headers(),
             ) as response:
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    try:
+                        exc.response.read()
+                    except httpx.StreamError:
+                        pass
+                    detail = _response_error_detail(exc.response)
+                    raise ProviderError(
+                        f"DeepSeek request failed: {detail}"
+                    ) from exc
                 for line in response.iter_lines():
                     event = _parse_stream_line(line)
                     if event is not None:
                         yielded_any = True
                         yield event
-        except httpx.HTTPStatusError as exc:
-            exc.response.read()
-            detail = _response_error_detail(exc.response)
-            raise ProviderError(f"DeepSeek request failed: {detail}") from exc
         except httpx.StreamError as exc:
             if not yielded_any:
                 yield from self._complete_to_events(messages, model, options)

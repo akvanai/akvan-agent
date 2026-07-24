@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import threading
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -110,11 +111,17 @@ class AgentLoop:
         user_input: str,
         *,
         turn_context: TurnContext | None = None,
+        cancel: threading.Event | None = None,
+        defer_compaction_persistence: bool = False,
     ) -> Iterator[str]:
         """Yield public answer text while retaining the original API."""
 
         for event in self.stream_events(
-            messages, user_input, turn_context=turn_context
+            messages,
+            user_input,
+            turn_context=turn_context,
+            cancel=cancel,
+            defer_compaction_persistence=defer_compaction_persistence,
         ):
             if event.content is not None:
                 yield event.content
@@ -125,6 +132,8 @@ class AgentLoop:
         user_input: str,
         *,
         turn_context: TurnContext | None = None,
+        cancel: threading.Event | None = None,
+        defer_compaction_persistence: bool = False,
     ) -> Iterator[AgentEvent]:
         """Yield safe activity transitions and public answer chunks for one turn."""
 
@@ -137,6 +146,9 @@ class AgentLoop:
         context_recovery_attempts = 0
 
         for _ in range(self.max_iterations):
+            if cancel is not None and cancel.is_set():
+                yield AgentEvent(AgentState.STOPPED)
+                return
             chunks: list[str] = []
             reasoning_chunks: list[str] = []
             tool_call_parts: dict[int, dict[str, object]] = {}
@@ -165,7 +177,10 @@ class AgentLoop:
                 and self.last_context_usage.estimated_total
                 >= self.context_budget.compression_threshold_tokens
             ):
-                changed = self._compact_messages(messages)
+                changed = self._compact_messages(
+                    messages,
+                    persist=not defer_compaction_persistence,
+                )
                 if changed:
                     user_index = self._latest_user_index(messages)
                     request_messages = self._request_messages(
@@ -195,6 +210,9 @@ class AgentLoop:
                     model=self.model,
                     options=options,
                 ):
+                    if cancel is not None and cancel.is_set():
+                        yield AgentEvent(AgentState.STOPPED)
+                        return
                     request_cost = provider_event.cost_usd
                     if request_cost is not None:
                         if (
@@ -232,6 +250,9 @@ class AgentLoop:
                     chunks.append(content)
                     yield AgentEvent(AgentState.RESPONDING, content=content)
             except ProviderError as exc:
+                if cancel is not None and cancel.is_set():
+                    yield AgentEvent(AgentState.STOPPED)
+                    return
                 if (
                     self.context_config.enabled
                     and self.context_config.compression_enabled
@@ -240,7 +261,11 @@ class AgentLoop:
                     < MAX_CONTEXT_RECOVERY_ATTEMPTS
                 ):
                     context_recovery_attempts += 1
-                    if self._compact_messages(messages, force=True):
+                    if self._compact_messages(
+                        messages,
+                        force=True,
+                        persist=not defer_compaction_persistence,
+                    ):
                         user_index = self._latest_user_index(messages)
                         logger.warning(
                             "Provider context overflow; compacted and retrying "
@@ -260,9 +285,15 @@ class AgentLoop:
                     ) from exc
                 raise
             except AgentLoopError:
+                if cancel is not None and cancel.is_set():
+                    yield AgentEvent(AgentState.STOPPED)
+                    return
                 yield AgentEvent(AgentState.FAILED)
                 raise
             except Exception as exc:
+                if cancel is not None and cancel.is_set():
+                    yield AgentEvent(AgentState.STOPPED)
+                    return
                 yield AgentEvent(AgentState.FAILED)
                 raise AgentLoopError(
                     f"Provider failed unexpectedly: {exc}"
@@ -270,6 +301,9 @@ class AgentLoop:
 
             content = "".join(chunks)
             if tool_call_parts:
+                if cancel is not None and cancel.is_set():
+                    yield AgentEvent(AgentState.STOPPED)
+                    return
                 tool_calls = [tool_call_parts[index] for index in sorted(tool_call_parts)]
                 assistant_message: Message = {
                     "role": "assistant",
@@ -283,16 +317,24 @@ class AgentLoop:
                     assistant_message["reasoning_content"] = " "
                 messages.append(assistant_message)
                 try:
-                    yield from self._run_tool_calls(messages, tool_calls)
+                    yield from self._run_tool_calls(
+                        messages, tool_calls, cancel=cancel
+                    )
                 except AgentLoopError:
                     yield AgentEvent(AgentState.FAILED)
                     raise
                 except Exception as exc:
                     yield AgentEvent(AgentState.FAILED)
                     raise AgentLoopError(f"Tool execution failed: {exc}") from exc
+                if cancel is not None and cancel.is_set():
+                    yield AgentEvent(AgentState.STOPPED)
+                    return
                 yield AgentEvent(AgentState.THINKING)
                 continue
 
+            if cancel is not None and cancel.is_set():
+                yield AgentEvent(AgentState.STOPPED)
+                return
             if not responding:
                 yield AgentEvent(AgentState.RESPONDING)
             messages.append({"role": "assistant", "content": content})
@@ -348,14 +390,18 @@ class AgentLoop:
         return any(marker in text for marker in markers)
 
     def _compact_messages(
-        self, messages: list[Message], *, force: bool = False
+        self,
+        messages: list[Message],
+        *,
+        force: bool = False,
+        persist: bool = True,
     ) -> bool:
         result = self.context_compressor.compact(messages, force=force)
         self.last_compaction = result
         if not result.changed:
             return False
         messages[:] = result.messages
-        if self.compaction_callback is not None:
+        if persist and self.compaction_callback is not None:
             self.compaction_callback(messages)
         logger.info(
             "Context compacted tokens=%d->%d pruned=%d summarized=%d",
@@ -444,7 +490,11 @@ class AgentLoop:
                 function["arguments"] = str(function.get("arguments", "")) + arguments
 
     def _run_tool_calls(
-        self, messages: list[Message], tool_calls: object
+        self,
+        messages: list[Message],
+        tool_calls: object,
+        *,
+        cancel: threading.Event | None = None,
     ) -> Iterator[AgentEvent]:
         if not isinstance(tool_calls, list):
             raise AgentLoopError("Provider returned malformed tool calls.")
@@ -452,6 +502,8 @@ class AgentLoop:
         tools_by_name = {tool.name: tool for tool in self.tools}
         result_indices: list[int] = []
         for call in tool_calls:
+            if cancel is not None and cancel.is_set():
+                return
             if not isinstance(call, dict):
                 raise AgentLoopError("Provider returned a malformed tool call.")
             call_id = call.get("id")
@@ -498,6 +550,8 @@ class AgentLoop:
                     reason=request.reason,
                     choices=tuple(choice.value for choice in request.choices),
                 )
+                if cancel is not None and cancel.is_set():
+                    return
                 approval = self.approval_manager.resolve(request, requirement)
             if not approval.allowed:
                 yield AgentEvent(
@@ -517,13 +571,15 @@ class AgentLoop:
                 )
                 continue
 
+            if cancel is not None and cancel.is_set():
+                return
             yield AgentEvent(
                 AgentState.RUNNING_TOOL,
                 tool_name=name,
                 tool_arguments=arguments,
             )
             try:
-                tool_result = tool.invoke(arguments)
+                tool_result = tool.invoke(arguments, cancel=cancel)
             except Exception as exc:
                 tool_result = ToolResult(f"Error: {exc}")
             tool_result = self.result_store.bound_result(

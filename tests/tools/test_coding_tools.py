@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -100,6 +101,25 @@ def test_read_file_allows_outside_project_root(tmp_path: Path) -> None:
     result = read_tool.invoke({"path": str(outside)})
 
     assert result.content == "outside content\n"
+
+
+def test_terminal_stop_cancels_foreground_process(tmp_path: Path) -> None:
+    manager = ProcessManager()
+    terminal = by_name(build_terminal_tools(tmp_path, manager))["terminal"]
+    cancel = threading.Event()
+    timer = threading.Timer(0.1, cancel.set)
+
+    started = time.monotonic()
+    timer.start()
+    result = json.loads(
+        terminal.invoke({"command": "sleep 10"}, cancel=cancel).content
+    )
+    timer.join()
+
+    assert result["cancelled"] is True
+    assert result["running"] is False
+    assert time.monotonic() - started < 2
+    assert manager.list() == []
 
 
 def test_terminal_foreground_and_background_processes(tmp_path: Path) -> None:

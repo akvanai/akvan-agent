@@ -13,16 +13,20 @@ import pytest
 
 from rich.console import Console
 from prompt_toolkit.application import Application
+from prompt_toolkit.keys import Keys
+from prompt_toolkit.layout import Window
+from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.input.vt100_parser import Vt100Parser
 
 from agent import __version__
 from agent.events import AgentState
 from agent.messages import Completion
 from agent.prompts import PromptBuilder
-from agent.providers.base import Provider
+from agent.providers.base import Provider, ProviderError
 from agent.session import AgentSession
 from agent.tools.approval import ApprovalChoice, ApprovalRequest
 from agent.ui.app import build_parser
-from agent.ui import chat
+from agent.ui import chat, rendering
 from agent.tools.base import Tool
 from agent.tools.presentation import ToolPresentation
 from agent.ui.chat import render_chat_view
@@ -37,6 +41,7 @@ from agent.ui.rendering import (
     render_compact_header,
     render_header,
     render_markdown_message,
+    run_prompt_footer,
 )
 from agent.ui.setup import run_full_screen_selector
 
@@ -271,6 +276,79 @@ def test_chat_session_uses_normal_terminal_buffer(monkeypatch, tmp_path) -> None
     assert application_started is False
 
 
+@pytest.mark.parametrize(("width", "height"), [(80, 3), (40, 5)])
+def test_live_response_viewport_follows_latest_line(
+    width: int, height: int
+) -> None:
+    rendered = "\n".join(f"streamed line {index}" for index in range(12))
+    fragments = chat._follow_latest_fragments(rendered)
+    control = FormattedTextControl(fragments)
+    content = control.create_content(width, height)
+    window = Window(content=control, wrap_lines=False)
+
+    window._scroll(content, width, height)
+
+    assert content.cursor_position.y == content.line_count - 1
+    latest_line = "".join(
+        fragment[1] for fragment in content.get_line(content.cursor_position.y)
+    )
+    assert latest_line == "streamed line 11"
+    assert window.vertical_scroll > 0
+    assert (
+        window.vertical_scroll
+        <= content.cursor_position.y
+        < window.vertical_scroll + height
+    )
+
+
+def test_call_in_app_loop_skips_missing_or_closed_loop() -> None:
+    class LiveLoop:
+        def call_soon_threadsafe(self, callback) -> None:
+            callback()
+
+    class ClosedLoop:
+        def call_soon_threadsafe(self, callback) -> None:
+            raise RuntimeError("Event loop is closed")
+
+    callback_calls: list[bool] = []
+    app = type("FakeApp", (), {"loop": None})()
+
+    assert chat._call_in_app_loop(app, lambda: callback_calls.append(True)) is False
+    app.loop = LiveLoop()
+    assert chat._call_in_app_loop(app, lambda: callback_calls.append(True)) is True
+    app.loop = ClosedLoop()
+    assert chat._call_in_app_loop(app, lambda: callback_calls.append(True)) is False
+    assert callback_calls == [True]
+
+
+def test_queued_completion_does_not_exit_stopped_app_twice() -> None:
+    class FakeFuture:
+        finished = False
+
+        def done(self) -> bool:
+            return self.finished
+
+    class FakeApp:
+        def __init__(self) -> None:
+            self.future = FakeFuture()
+            self.exit_calls = 0
+
+        def exit(self, result=None) -> None:
+            if self.future.done():
+                raise Exception("Return value already set")
+            self.future.finished = True
+            self.exit_calls += 1
+
+    app = FakeApp()
+
+    def queued_completion() -> bool:
+        return chat._exit_app_if_running(app)
+
+    assert chat._exit_app_if_running(app) is True
+    assert queued_completion() is False
+    assert app.exit_calls == 1
+
+
 def test_approval_controller_accepts_a_numbered_choice_and_clears_request() -> None:
     shown = threading.Event()
     controller = chat._ApprovalController(shown.set)
@@ -294,6 +372,64 @@ def test_approval_controller_accepts_a_numbered_choice_and_clears_request() -> N
 
     assert not worker.is_alive()
     assert result == [ApprovalChoice.SESSION]
+    assert controller.request is None
+
+
+def test_approval_key_inserts_when_no_approval_pending() -> None:
+    controller = chat._ApprovalController()
+
+    assert chat._approval_key_insert(controller, "n", choice=ApprovalChoice.DENY) == "n"
+    assert chat._approval_key_insert(controller, "y", choice=ApprovalChoice.ONCE) == "y"
+    assert chat._approval_key_insert(controller, "d", choice=ApprovalChoice.DENY) == "d"
+    assert chat._approval_key_insert(controller, "1", index=0) == "1"
+    assert chat._approval_key_insert(controller, "2", index=1) == "2"
+
+
+def test_approval_key_is_consumed_when_approval_pending() -> None:
+    shown = threading.Event()
+    controller = chat._ApprovalController(shown.set)
+    request = ApprovalRequest(
+        "request-1",
+        "terminal",
+        "rm -r generated",
+        "recursive file deletion",
+        (ApprovalChoice.ONCE, ApprovalChoice.SESSION, ApprovalChoice.DENY),
+    )
+    result: list[ApprovalChoice] = []
+    worker = threading.Thread(
+        target=lambda: result.append(controller.ask(request, 1))
+    )
+
+    worker.start()
+    assert shown.wait(1)
+    assert chat._approval_key_insert(controller, "n", choice=ApprovalChoice.DENY) is None
+    worker.join(1)
+
+    assert not worker.is_alive()
+    assert result == [ApprovalChoice.DENY]
+    assert controller.request is None
+
+
+def test_approval_key_inserts_when_choice_not_available() -> None:
+    shown = threading.Event()
+    controller = chat._ApprovalController(shown.set)
+    request = ApprovalRequest(
+        "request-1",
+        "terminal",
+        "dangerous command",
+        "test risk",
+        (ApprovalChoice.DENY,),
+    )
+    worker = threading.Thread(target=lambda: controller.ask(request, 1))
+
+    worker.start()
+    assert shown.wait(1)
+    assert chat._approval_key_insert(controller, "y", choice=ApprovalChoice.ONCE) == "y"
+    assert chat._approval_key_insert(controller, "3", index=2) == "3"
+    assert chat._approval_key_insert(controller, "d", choice=ApprovalChoice.DENY) is None
+    worker.join(1)
+
+    assert not worker.is_alive()
     assert controller.request is None
 
 
@@ -367,7 +503,82 @@ def test_plain_status_fragments_show_context_percent() -> None:
     text = "".join(part for _, part in fragments)
 
     assert "🤖" not in text
-    assert text.startswith("model │ provider │ ctx 8% │ Esc+Enter newline")
+    assert text.startswith("model │ provider │ ctx 8% │ Shift+Enter newline")
+
+
+def test_prompt_footer_uses_shift_enter_for_newline(monkeypatch) -> None:
+    captured_bindings = []
+
+    def fake_run(self, *args, **kwargs):
+        captured_bindings.extend(self.key_bindings.bindings)
+        return ""
+
+    monkeypatch.setattr(Application, "run", fake_run)
+    console = Console(file=StringIO(), force_terminal=False, width=80)
+
+    run_prompt_footer(console, model="model", provider_name="provider")
+
+    keys = {binding.keys for binding in captured_bindings}
+    assert (Keys.ControlJ,) in keys
+    assert (Keys.Escape, Keys.ControlM) not in keys
+    shift_enter = next(
+        binding for binding in captured_bindings
+        if binding.keys == (Keys.ControlJ,)
+    )
+
+    class Buffer:
+        text = ""
+
+        def insert_text(self, text: str) -> None:
+            self.text += text
+
+    class Event:
+        current_buffer = Buffer()
+
+    shift_enter.handler(Event())
+    assert Event.current_buffer.text == "\n"
+
+
+def test_enhanced_keyboard_reporting_maps_shift_enter_and_restores_mode() -> None:
+    for sequence in rendering._SHIFT_ENTER_SEQUENCES:
+        assert rendering.ANSI_SEQUENCES[sequence] == Keys.ControlJ
+
+    class Output:
+        def __init__(self) -> None:
+            self.writes: list[str] = []
+            self.flushes = 0
+
+        def write_raw(self, text: str) -> None:
+            self.writes.append(text)
+
+        def flush(self) -> None:
+            self.flushes += 1
+
+    class App:
+        output = Output()
+
+    rendering._set_enhanced_keyboard_reporting(App(), enabled=True)
+    rendering._set_enhanced_keyboard_reporting(App(), enabled=False)
+
+    assert App.output.writes == ["\x1b[>1u", "\x1b[<u"]
+    assert App.output.flushes == 2
+
+
+def test_enhanced_keyboard_reporting_decodes_ctrl_keys() -> None:
+    key_presses = []
+    parser = Vt100Parser(key_presses.append)
+
+    parser.feed_and_flush("\x1b[99;5u")
+    parser.feed_and_flush("\x1b[100;5u")
+    parser.feed_and_flush("\x1b[110;5u")
+    parser.feed_and_flush("\x1b[112;5u")
+
+    assert [key_press.key for key_press in key_presses] == [
+        Keys.ControlC,
+        Keys.ControlD,
+        Keys.ControlN,
+        Keys.ControlP,
+    ]
 
 
 def test_build_status_strip_omits_context_when_unknown() -> None:
@@ -420,3 +631,55 @@ def test_interactive_session_keeps_all_turns_in_terminal_output(
     assert "answer 1" in rendered
     assert "second message" in rendered
     assert "answer 2" in rendered
+
+
+def test_interactive_session_prints_provider_error_and_continues(
+    monkeypatch, tmp_path
+) -> None:
+    class FailingProvider(Provider):
+        name = "fake"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, messages, model, options=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise ProviderError(
+                    "OpenAI Codex request failed: HTTP 400: bad request"
+                )
+            return Completion(
+                message={"role": "assistant", "content": f"ok {self.calls}"}
+            )
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    home.mkdir()
+    project.mkdir()
+    session = AgentSession.create(
+        provider=FailingProvider(),
+        model="model",
+        max_iterations=3,
+        prompt_builder=PromptBuilder(cwd=project, user_home=home),
+        store=None,
+    )
+    inputs = iter(["fail please", "retry", "/exit"])
+    errors: list[str] = []
+    monkeypatch.setattr(chat, "ask_user", lambda *args, **kwargs: next(inputs))
+    monkeypatch.setattr(
+        chat, "print_error", lambda _console, message: errors.append(message)
+    )
+    output = StringIO()
+    console = Console(file=output, force_terminal=False, width=80)
+
+    assert chat.run_interactive_session(console, session=session) == 0
+
+    assert errors == [
+        "[bold #ff0000]Error:[/] OpenAI Codex request failed: HTTP 400: bad request"
+    ]
+    rendered = output.getvalue()
+    assert "fail please" in rendered
+    assert "retry" in rendered
+    assert "ok 2" in rendered
+    assert "Traceback" not in rendered
+    assert "StreamClosed" not in rendered

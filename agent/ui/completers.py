@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 STATIC_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/exit", "Quit"),
     ("/quit", "Quit"),
+    ("/stop", "Stop the current turn"),
     ("/sessions", "List saved chats (paginated)"),
     ("/resume", "Resume a saved chat by list number"),
     ("/usage", "Show estimated context usage"),

@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class TurnControl:
     cancel: threading.Event = field(default_factory=threading.Event)
+    stop_requested: asyncio.Event = field(default_factory=asyncio.Event)
     state: AgentState = AgentState.THINKING
 
 
@@ -110,6 +111,7 @@ class ChatSessionService:
             AgentState.AWAITING_APPROVAL: "Awaiting approval",
             AgentState.RESPONDING: "Streaming response",
             AgentState.COMPLETED: "Completed",
+            AgentState.STOPPED: "Stopped",
             AgentState.FAILED: "Failed",
         }.get(control.state, "Working")
 
@@ -178,11 +180,13 @@ class ChatSessionService:
         control = self._active_turns.get(chat_id)
         if control is None or control.state in {
             AgentState.COMPLETED,
+            AgentState.STOPPED,
             AgentState.FAILED,
         }:
             await self.delivery.send(chat_id, "Nothing is currently running.")
             return
         control.cancel.set()
+        control.stop_requested.set()
         await approval_flow.deny_pending(chat_id)
         await self.delivery.send(chat_id, "Stopping current response…")
 
@@ -206,8 +210,8 @@ class ChatSessionService:
         )
         control = TurnControl()
         self._active_turns[chat_id] = control
-        original_message_count = len(session.messages)
         session.begin_turn()
+        turn_messages = session.turn_messages()
         stop_typing = asyncio.Event()
 
         typing_task = asyncio.create_task(
@@ -231,39 +235,84 @@ class ChatSessionService:
             )
             turn_context = TurnContext(provider_user_content=provider_content)
 
+        finish_lock = threading.Lock()
+        stream_finished = False
+
+        def finish_stream(stopped: bool) -> None:
+            nonlocal stream_finished
+            with finish_lock:
+                if stream_finished:
+                    return
+                stream_finished = True
+            if stopped:
+                consumer.on_delta("\n\n⏹ Stopped")
+            consumer.finish()
+
         def run_sync() -> None:
             try:
                 events = session.loop.stream_events(
-                    session.messages,
+                    turn_messages,
                     user_input,
                     turn_context=turn_context,
+                    cancel=control.cancel,
+                    defer_compaction_persistence=True,
                 )
                 for event in events:
                     control.state = event.state
+                    if event.state == AgentState.STOPPED:
+                        break
                     if control.cancel.is_set():
                         events.close()
                         break
                     if event.state == AgentState.RESPONDING and event.content:
                         consumer.on_delta(event.content)
             finally:
-                if control.cancel.is_set():
-                    consumer.on_delta("\n\n⏹ Stopped")
-                consumer.finish()
+                stopped = (
+                    control.cancel.is_set()
+                    or control.state == AgentState.STOPPED
+                )
+                if stopped:
+                    control.cancel.set()
+                finish_stream(stopped)
+
+        worker_task = asyncio.create_task(asyncio.to_thread(run_sync))
+        stop_task = asyncio.create_task(control.stop_requested.wait())
+
+        def consume_background_result(task: asyncio.Task[None]) -> None:
+            try:
+                task.result()
+            except Exception:
+                logger.exception("Stopped gateway worker failed during cleanup")
 
         try:
-            await asyncio.to_thread(run_sync)
-            await consumer_task
-            if control.cancel.is_set():
-                del session.messages[original_message_count:]
+            done, _ = await asyncio.wait(
+                {worker_task, stop_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            stopped_early = stop_task in done and not worker_task.done()
+            if stopped_early:
+                finish_stream(True)
+                worker_task.add_done_callback(consume_background_result)
             else:
-                session.scan_turn_for_memory_tool_use(original_message_count)
-                session.scan_turn_for_skill_tool_use(original_message_count)
+                await worker_task
+            stop_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await stop_task
+            await consumer_task
+            if control.cancel.is_set() or control.state == AgentState.STOPPED:
+                session.cancel_turn()
+                session.maybe_spawn_background_review(interrupted=True)
+            else:
+                turn_start = session.latest_turn_start(turn_messages)
+                session.commit_turn_messages(turn_messages)
+                session.complete_turn()
+                session.scan_turn_for_memory_tool_use(turn_start)
+                session.scan_turn_for_skill_tool_use(turn_start)
                 session.record_turn_tool_iterations(
                     AgentSession.count_turn_tool_iterations(
-                        session.messages, original_message_count,
+                        session.messages, turn_start,
                     ),
                 )
-                session.persist_new_messages()
                 self.store.set_gateway_binding(
                     self.gateway_id, chat_id, session.persistence.session_id,
                 )
@@ -281,6 +330,7 @@ class ChatSessionService:
                     session.maybe_spawn_background_review(on_complete=_notify)
         finally:
             stop_typing.set()
+            session.cancel_turn()
             typing_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await typing_task

@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from html import escape
+import threading
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -65,6 +66,9 @@ class Tool:
     run: Callable[..., str | ToolResult]
     approval: Callable[[Mapping[str, object]], object | None] | None = None
     presentation: ToolPresentation | None = None
+    cancel_run: (
+        Callable[[Mapping[str, object], threading.Event], str | ToolResult] | None
+    ) = None
 
     def provider_schema(self) -> dict[str, object]:
         """Return an OpenAI-compatible function-tool declaration."""
@@ -78,10 +82,18 @@ class Tool:
             },
         }
 
-    def invoke(self, arguments: Mapping[str, object]) -> ToolResult:
+    def invoke(
+        self,
+        arguments: Mapping[str, object],
+        *,
+        cancel: threading.Event | None = None,
+    ) -> ToolResult:
         """Run the tool with model-supplied keyword arguments."""
 
-        result = self.run(**arguments)
+        if cancel is not None and self.cancel_run is not None:
+            result = self.cancel_run(arguments, cancel)
+        else:
+            result = self.run(**arguments)
         if isinstance(result, ToolResult):
             return result
         if not isinstance(result, str):

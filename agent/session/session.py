@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import os
 import uuid
@@ -59,6 +60,10 @@ class AgentSession:
     _iters_since_skill: int = field(default=0, repr=False)
     _skill_review_pending: bool = field(default=False, repr=False)
     _turns_since_knowledge: int = field(default=0, repr=False)
+    _turn_state_snapshot: (
+        tuple[int, int, bool, int, bool, int] | None
+    ) = field(default=None, repr=False)
+    _active_turn_messages: list[Message] | None = field(default=None, repr=False)
 
     @classmethod
     def create(
@@ -140,7 +145,7 @@ class AgentSession:
                 return []
             return [
                 str(message.get("content") or "")
-                for message in pending_session[0].messages
+                for message in pending_session[0].messages_for_tools()
                 if message.get("role") == "user"
             ]
 
@@ -216,6 +221,38 @@ class AgentSession:
             cwd=str(self.prompt.builder.cwd),
         )
 
+    def messages_for_tools(self) -> list[Message]:
+        """Expose the active private transcript to session-aware tools."""
+
+        return (
+            self._active_turn_messages
+            if self._active_turn_messages is not None
+            else self.messages
+        )
+
+    def turn_messages(self) -> list[Message]:
+        """Return an isolated transcript for an in-flight turn."""
+
+        messages = copy.deepcopy(self.messages)
+        self._active_turn_messages = messages
+        return messages
+
+    def commit_turn_messages(self, messages: list[Message]) -> None:
+        """Atomically publish and persist a successfully completed turn."""
+
+        self.messages[:] = messages
+        self._active_turn_messages = None
+        self._persist_compacted_messages(self.messages)
+
+    @staticmethod
+    def latest_turn_start(messages: list[Message]) -> int:
+        """Return the latest user-message index after any auto-compaction."""
+
+        for index in range(len(messages) - 1, -1, -1):
+            if messages[index].get("role") == "user":
+                return index
+        return len(messages)
+
     def compact_context(self, focus: str | None = None) -> CompactionResult:
         """Compact the live context and atomically persist the result."""
 
@@ -249,7 +286,7 @@ class AgentSession:
             memory_store=self.prompt.memory_store,
             knowledge_user_messages=lambda: [
                 extract_message_text(message.get("content"))
-                for message in self.messages
+                for message in self.messages_for_tools()
                 if message.get("role") == "user"
             ],
             on_skills_changed=self.reload,
@@ -267,6 +304,15 @@ class AgentSession:
 
     def begin_turn(self) -> None:
         """Prepare per-turn memory nudge state."""
+        if self._turn_state_snapshot is None:
+            self._turn_state_snapshot = (
+                self._turns_since_memory,
+                self._user_turn_count,
+                self._memory_review_pending,
+                self._iters_since_skill,
+                self._skill_review_pending,
+                self._turns_since_knowledge,
+            )
         knowledge_store = self.tooling.knowledge_store
         if (
             knowledge_store is not None
@@ -295,6 +341,28 @@ class AgentSession:
         if self._turns_since_memory >= self.prompt.memory_config.nudge_interval:
             self._memory_review_pending = True
             self._turns_since_memory = 0
+
+    def complete_turn(self) -> None:
+        """Commit session-local counters for the completed turn."""
+
+        self._active_turn_messages = None
+        self._turn_state_snapshot = None
+
+    def cancel_turn(self) -> None:
+        """Restore session-local counters after an interrupted turn."""
+
+        self._active_turn_messages = None
+        if self._turn_state_snapshot is None:
+            return
+        (
+            self._turns_since_memory,
+            self._user_turn_count,
+            self._memory_review_pending,
+            self._iters_since_skill,
+            self._skill_review_pending,
+            self._turns_since_knowledge,
+        ) = self._turn_state_snapshot
+        self._turn_state_snapshot = None
 
     def on_memory_tool_success(self) -> None:
         self._turns_since_memory = 0

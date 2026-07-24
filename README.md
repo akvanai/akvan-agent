@@ -163,7 +163,10 @@ commit `storage_state.json`, private media, or private templates.
 
 ## Chat, tools, and approvals
 
-Type `/exit` or press `Ctrl-D` to quit. The prompt stays pinned at the bottom. `Enter` sends; `Esc` then `Enter` adds a new line. When the active provider reports a dollar cost, the prompt status row shows the accumulated cost for the current Akvan session.
+Type `/exit` or press `Ctrl-D` to quit. The prompt stays pinned at the bottom.
+`Enter` sends; `Shift+Enter` adds a new line. When the active provider reports a
+dollar cost, the prompt status row shows the accumulated cost for the current
+Akvan session.
 
 CLI sessions are persisted to `~/.akvan/state.db`. Use `/sessions` to browse saved chats (15 per page) and `/resume <number>` to continue one from the list. The agent can also search past conversations with the `session_search` tool (FTS5 full-text search over stored messages). Type `/` for command suggestions.
 
@@ -436,6 +439,7 @@ Use `/skills` to list skills by category, `/<skill-name> <request>` to activate 
 | Command | Purpose |
 |---------|---------|
 | `/exit`, `/quit` | Quit |
+| `/stop` | Stop only the current turn and return to the prompt |
 | `/reload` | Rebuild prompt and skills snapshot |
 | `/skills` | List skills by category |
 | `/usage` | Show estimated messages, tool-schema, output-reserve, and context usage |
@@ -452,6 +456,14 @@ context with a bounded preview and path. Long histories compact automatically,
 and provider context-overflow errors trigger a bounded compact-and-retry cycle.
 Large skill packages remain progressively disclosed: metadata is indexed first,
 `SKILL.md` loads on demand, and supporting files load only when requested.
+
+`/stop` and `Ctrl+C` cancel only the in-flight turn; they do not close the CLI
+or end the saved chat. Cancelled turns use an isolated transcript and are not
+committed to session history. Foreground terminal subprocesses are terminated
+when their turn is cancelled. Other tools stop at their next supported
+cancellation boundary. Provider transports that cannot abort an in-flight read
+are detached; any late output is discarded and cannot modify session history.
+The gateway `/stop` command uses the same agent-loop cancellation path.
 
 When stdout is not a TTY, Akvan runs a simpler prompt loop without the
 pinned UI — useful for piping and scripting.
