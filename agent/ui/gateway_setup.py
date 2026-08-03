@@ -5,6 +5,7 @@ from __future__ import annotations
 import httpx
 from rich.console import Console
 
+from agent.agent import DEFAULT_MAX_ITERATIONS
 from agent.gateway.config import gateway_env_path
 from agent.gateway.daemon import (
     gateway_log_path, is_gateway_running, read_gateway_pid,
@@ -77,7 +78,8 @@ def _gateway_action_items(
 
 
 def run_gateway(
-    console: Console, *, yolo: bool = False, max_iterations: int = 30,
+    console: Console, *, yolo: bool = False,
+    max_iterations: int = DEFAULT_MAX_ITERATIONS,
 ) -> int:
     default = GATEWAY_INTEGRATIONS[0].definition.id if GATEWAY_INTEGRATIONS else None
     while True:
@@ -284,7 +286,10 @@ def _configure_gateway(
 
 
 def run_gateway_restart(
-    *, yolo: bool = False, max_iterations: int = 30, quiet: bool = False,
+    *,
+    yolo: bool = False,
+    max_iterations: int = DEFAULT_MAX_ITERATIONS,
+    quiet: bool = False,
 ) -> int:
     results = restart_running_gateways(yolo=yolo, max_iterations=max_iterations)
     if quiet and not results:

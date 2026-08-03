@@ -54,7 +54,7 @@ def test_compact_header_includes_session_sections() -> None:
         console,
         provider_name="deepseek",
         model="deepseek-v4-flash",
-        max_iterations=30,
+        max_iterations=100,
         tools=(),
         skills=(),
         cwd=None,
@@ -82,7 +82,7 @@ def test_cli_header_and_message_render() -> None:
         console,
         provider_name="openrouter",
         model="openai/gpt-4o-mini",
-        max_iterations=30,
+        max_iterations=100,
     )
     render_markdown_message(
         console,

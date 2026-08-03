@@ -40,6 +40,7 @@ from prompt_toolkit.widgets import TextArea
 from prompt_toolkit.styles import Style
 
 from agent import __version__
+from agent.agent import DEFAULT_MAX_ITERATIONS
 from agent.tools import AVAILABLE_TOOLS, Tool
 from agent.skills.models import Skill
 
@@ -255,7 +256,7 @@ def render_compact_header(
     *,
     provider_name: str,
     model: str,
-    max_iterations: int = 30,
+    max_iterations: int = DEFAULT_MAX_ITERATIONS,
     tools: tuple[Tool, ...] = (),
     skills: tuple[Skill, ...] = (),
     cwd: Path | None = None,

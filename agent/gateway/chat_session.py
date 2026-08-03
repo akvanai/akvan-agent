@@ -9,6 +9,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from agent.agent import DEFAULT_MAX_ITERATIONS
 from agent.config import Settings
 from agent.events import AgentState
 from agent.gateway.bindings import cache_key, get_or_create_session, reset_session
@@ -44,7 +45,7 @@ class ChatSessionService:
         runtime_config: GatewayRuntimeConfig,
         delivery: DeliveryService,
         yolo: bool = False,
-        max_iterations: int = 30,
+        max_iterations: int = DEFAULT_MAX_ITERATIONS,
     ) -> None:
         self.settings = settings
         self.gateway_id = gateway_id

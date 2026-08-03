@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 async def run_gateway(
     *, gateway_id: str = "telegram", yolo: bool = False,
-    max_iterations: int = 30,
+    max_iterations: int = DEFAULT_MAX_ITERATIONS,
 ) -> int:
     integration = get_gateway_integration(gateway_id)
     if integration is None:
@@ -94,7 +94,7 @@ async def run_gateway(
 
 def main(
     *, gateway_id: str = "telegram", yolo: bool = False,
-    max_iterations: int = 30,
+    max_iterations: int = DEFAULT_MAX_ITERATIONS,
 ) -> int:
     setup_logging(mode="gateway", gateway_id=gateway_id)
     return asyncio.run(run_gateway(

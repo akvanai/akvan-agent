@@ -9,6 +9,7 @@ import sys
 import time
 from pathlib import Path
 
+from agent.agent import DEFAULT_MAX_ITERATIONS
 from agent.config import akvan_home
 from agent.gateway.registry import GATEWAY_INTEGRATIONS
 from agent.logging_setup import logs_dir
@@ -102,7 +103,7 @@ def start_gateway_daemon(
     gateway_id: str,
     *,
     yolo: bool = False,
-    max_iterations: int = 30,
+    max_iterations: int = DEFAULT_MAX_ITERATIONS,
     project_root: Path | None = None,
 ) -> tuple[bool, str]:
     if is_gateway_running(gateway_id, project_root=project_root):
@@ -171,7 +172,7 @@ def restart_gateway_daemon(
     gateway_id: str,
     *,
     yolo: bool = False,
-    max_iterations: int = 30,
+    max_iterations: int = DEFAULT_MAX_ITERATIONS,
     project_root: Path | None = None,
 ) -> tuple[bool, str]:
     if not is_gateway_running(gateway_id, project_root=project_root):
@@ -197,7 +198,7 @@ def restart_gateway_daemon(
 def restart_running_gateways(
     *,
     yolo: bool = False,
-    max_iterations: int = 30,
+    max_iterations: int = DEFAULT_MAX_ITERATIONS,
     project_root: Path | None = None,
 ) -> list[tuple[str, bool, str]]:
     results: list[tuple[str, bool, str]] = []

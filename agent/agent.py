@@ -31,7 +31,7 @@ from agent.providers.base import Provider, ProviderError
 from agent.tools.approval import ApprovalManager, ApprovalRequirement
 from agent.tools.base import Tool, ToolResult
 
-DEFAULT_MAX_ITERATIONS = 30
+DEFAULT_MAX_ITERATIONS = 100
 MAX_CONTEXT_RECOVERY_ATTEMPTS = 3
 logger = logging.getLogger(__name__)
 

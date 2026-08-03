@@ -431,7 +431,7 @@ Use `/skills` to list skills by category, `/<skill-name> <request>` to activate 
 | Flag | Applies to | Purpose |
 |------|------------|---------|
 | `--yolo` | `akvan`, `akvan gateway` | Skip ordinary approvals; catastrophic commands remain blocked |
-| `--max-iterations N` | `akvan`, `akvan gateway` | Max agent iterations per user turn (default: 30) |
+| `--max-iterations N` | `akvan`, `akvan gateway` | Max agent iterations per user turn (default: 100) |
 | `--model MODEL` | `akvan` | Override `AKVAN_MODEL` for this session |
 
 ### In-session slash commands

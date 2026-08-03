@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import Callable
 
-from agent.agent import AgentLoopError
+from agent.agent import AgentLoopError, DEFAULT_MAX_ITERATIONS
 from agent.config import Settings
 from agent.event_log import log_gateway
 from agent.gateway.approval_flow import ApprovalFlowService
@@ -38,7 +38,7 @@ class GatewayService:
         store: SessionStore,
         adapter: GatewayAdapter,
         yolo: bool = False,
-        max_iterations: int = 30,
+        max_iterations: int = DEFAULT_MAX_ITERATIONS,
     ) -> None:
         self.settings = settings
         self.gateway_id = gateway_id

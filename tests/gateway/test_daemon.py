@@ -77,7 +77,7 @@ def test_start_and_stop_gateway_daemon(monkeypatch, tmp_path) -> None:
 
 
 def test_daemon_command_carries_gateway_identity() -> None:
-    telegram = _daemon_command("telegram", yolo=False, max_iterations=30)
+    telegram = _daemon_command("telegram", yolo=False, max_iterations=100)
     slack = _daemon_command("slack", yolo=True, max_iterations=12)
     assert telegram[telegram.index("--gateway-id") + 1] == "telegram"
     assert slack[slack.index("--gateway-id") + 1] == "slack"
