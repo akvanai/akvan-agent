@@ -50,10 +50,14 @@ def test_schema_migration_adds_gateway_tables(tmp_path) -> None:
         fts = store._conn.execute(
             "SELECT name FROM sqlite_master WHERE name = 'messages_fts'"
         ).fetchone()
-    assert int(version["version"]) == 5
+        scheduled = store._conn.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'scheduled_jobs'"
+        ).fetchone()
+    assert int(version["version"]) == 6
     assert table is not None
     assert preferences is not None
     assert fts is not None
+    assert scheduled is not None
     store.close()
 
 

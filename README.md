@@ -330,13 +330,29 @@ Create the bot via [@BotFather](https://t.me/BotFather). Find your user id with
 
 The gateway streams replies with Telegram drafts when available and falls back to
 editing a single message. Its native menu provides `/new`, `/status`, `/settings`,
-`/stop`, and `/help`; `/start` shows the welcome message. Authorized gateway users
-have the same tool access as the local CLI (files, terminal, memory, skills). Sensitive
-tool approvals use inline Allow once, Allow for session, optional Always allow, and
-Deny buttons. `--yolo` and manual approval settings apply when configured.
-Typing stays active while Akvan thinks, runs tools, or streams, and pauses while an
-approval is waiting. Chat-scoped model, approval, and streaming preferences plus
-sessions are persisted in `~/.akvan/state.db` without changing `.env`.
+`/schedule`, `/stop`, and `/help`; `/start` shows the welcome message. Authorized
+gateway users have the same tool access as the local CLI (files, terminal, memory,
+skills, schedule). Sensitive tool approvals use inline Allow once, Allow for session,
+optional Always allow, and Deny buttons. `--yolo` and manual approval settings apply
+when configured. Typing stays active while Akvan thinks, runs tools, or streams, and
+pauses while an approval is waiting. Chat-scoped model, approval, and streaming
+preferences plus sessions are persisted in `~/.akvan/state.db` without changing `.env`.
+
+### Scheduled jobs
+
+Ask Akvan in chat to schedule a reminder or recurring task, or use the CLI:
+
+```bash
+akvan schedule create "every 1d" "Summarize overnight CI failures" --name morning-ci
+akvan schedule list
+akvan schedule pause morning-ci
+```
+
+Jobs are stored in `~/.akvan/state.db` and fire from the **running gateway ticker**
+(default every 60s). Each run uses a fresh agent session with YOLO approvals and
+without the `schedule` tool (recursion guard). Outputs are saved under
+`~/.akvan/schedule/output/` and can be delivered back to the origin Telegram chat.
+Use `/schedule` in Telegram to list, pause, resume, run, or remove jobs.
 
 ## Telegram delivery
 
@@ -425,6 +441,7 @@ Use `/skills` to list skills by category, `/<skill-name> <request>` to activate 
 | `akvan tools` | Optional web and browser-backed tools setup |
 | `akvan gateway` | Gateway manager |
 | `akvan gateway restart` | Restart running gateways to pick up code changes |
+| `akvan schedule …` | List/create/pause/resume/run/remove/tick scheduled jobs |
 | `akvan logs …` | View and filter log files (see [Logs](#logs)) |
 | `akvan skills sync` | Copy bundled skills into `~/.akvan/skills/` |
 | `akvan skills reset <name>` | Reset bundled skill manifest tracking |

@@ -129,7 +129,13 @@ class ChatSessionService:
         *,
         model: str | None = None,
         approval_mode: str | None = None,
+        chat_id: str | None = None,
     ) -> AgentSession:
+        from agent.schedule.jobs import ScheduleOrigin
+
+        origin = None
+        if chat_id is not None:
+            origin = ScheduleOrigin(platform=self.gateway_id, chat_id=chat_id)
         return AgentSession.create(
             provider=self.provider,
             model=model or self.settings.model,
@@ -141,6 +147,7 @@ class ChatSessionService:
             store=self.store,
             session_id=session_id,
             session_source=self.gateway_id,
+            schedule_origin=origin,
         )
 
     def factory_for(self, chat_id: str):
@@ -151,6 +158,7 @@ class ChatSessionService:
                 session_id,
                 model=self.usable_model(chat_id, preferences.get("model")),
                 approval_mode=preferences.get("approval_mode"),
+                chat_id=chat_id,
             )
 
         return factory

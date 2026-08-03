@@ -314,7 +314,7 @@ class TelegramAdapter:
         )
         for command in (
             "start", "new", "status", "usage", "compress", "knowledge",
-            "settings", "stop", "help"
+            "schedule", "settings", "stop", "help"
         ):
             self._app.add_handler(CommandHandler(command, self._on_command))
         self._app.add_handler(CallbackQueryHandler(self._on_callback))
@@ -327,6 +327,7 @@ class TelegramAdapter:
             BotCommand("usage", "Show estimated context usage"),
             BotCommand("compress", "Compact conversation history"),
             BotCommand("knowledge", "Review global knowledge"),
+            BotCommand("schedule", "List and manage scheduled jobs"),
             BotCommand("settings", "Configure model, safety, and streaming"),
             BotCommand("stop", "Stop the current response"),
             BotCommand("help", "Show help"),

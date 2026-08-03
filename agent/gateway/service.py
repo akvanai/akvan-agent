@@ -18,6 +18,8 @@ from agent.gateway.delivery import DeliveryService
 from agent.gateway.types import CallbackInteraction, InboundMessage
 from agent.logging_setup import set_session_context
 from agent.providers.base import Provider, ProviderError
+from agent.schedule.config import is_schedule_enabled, load_schedule_config
+from agent.schedule.scheduler import tick as schedule_tick
 from agent.storage.store import SessionStore
 
 logger = logging.getLogger(__name__)
@@ -72,6 +74,8 @@ class GatewayService:
             chat_session=self.chat_session,
             delivery=self.delivery,
         )
+        self._schedule_task: asyncio.Task[None] | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     def _is_authorized(self, message: InboundMessage) -> bool:
         return (
@@ -84,6 +88,42 @@ class GatewayService:
             callback.platform == self.gateway_id
             and self.access_policy(callback.user_id)
         )
+
+    def _sync_delivery_send(self, chat_id: str, text: str) -> None:
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            raise RuntimeError("Gateway event loop is not available for delivery.")
+        future = asyncio.run_coroutine_threadsafe(
+            self.delivery.send(chat_id, text),
+            loop,
+        )
+        future.result(timeout=120)
+
+    async def _schedule_ticker(self) -> None:
+        cfg = load_schedule_config()
+        interval = cfg.tick_interval_seconds
+        logger.info(
+            "Schedule ticker started (interval=%ss)",
+            interval,
+        )
+        try:
+            while True:
+                try:
+                    await asyncio.to_thread(
+                        schedule_tick,
+                        self.store,
+                        delivery_send=self._sync_delivery_send,
+                        settings=self.settings,
+                        provider=self.provider,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("Schedule tick failed")
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            logger.info("Schedule ticker stopped")
+            raise
 
     async def handle_message(self, message: InboundMessage) -> None:
         if not self._is_authorized(message):
@@ -155,6 +195,7 @@ class GatewayService:
 
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
+        self._loop = loop
         self.chat_session.set_loop(loop)
         self.approval_flow.set_loop(loop)
         self.adapter.set_message_handler(self.handle_message)
@@ -162,8 +203,22 @@ class GatewayService:
             self.adapter.set_callback_handler(self.handle_callback)
         if not await self.adapter.connect():
             raise RuntimeError(f"Failed to connect {self.gateway_name} adapter.")
+        if is_schedule_enabled():
+            self._schedule_task = asyncio.create_task(
+                self._schedule_ticker(),
+                name="akvan-schedule-ticker",
+            )
 
     async def stop(self) -> None:
+        task = self._schedule_task
+        self._schedule_task = None
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         await self.adapter.disconnect()
         self.provider.close()
         self.store.close()
+        self._loop = None

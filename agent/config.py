@@ -294,6 +294,7 @@ def resolve_enabled_toolsets(
 
     from agent.memory.config import is_memory_enabled
     from agent.knowledge.config import is_knowledge_enabled
+    from agent.schedule.config import is_schedule_enabled
     from agent.tools.browser_runtime.config import (
         is_banner_generation_configured,
         is_browser_configured,
@@ -308,6 +309,8 @@ def resolve_enabled_toolsets(
                 toolsets.append(name)
     if is_knowledge_enabled(project_root=project_root) and "knowledge" not in toolsets:
         toolsets.append("knowledge")
+    if is_schedule_enabled(project_root=project_root) and "schedule" not in toolsets:
+        toolsets.append("schedule")
     if is_web_configured(project_root=project_root) and "web" not in toolsets:
         toolsets.append("web")
     if (

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from agent.memory.store import MemoryStore
 from agent.knowledge.store import KnowledgeStore
+from agent.schedule.jobs import ScheduleOrigin
 from agent.skills import SkillRegistry
 from agent.storage.store import SessionStore
 from agent.tools.approval import ApprovalManager
@@ -27,7 +28,9 @@ class ToolCoordinator:
     process_manager: ProcessManager
     registry: ToolRegistry
     knowledge_store: KnowledgeStore | None
+    schedule_origin: ScheduleOrigin | None = None
     _session_search_ctx: SessionSearchContext | None = field(default=None, repr=False)
+    _store: SessionStore | None = field(default=None, repr=False)
 
     @classmethod
     def create(
@@ -46,6 +49,7 @@ class ToolCoordinator:
         knowledge_store: KnowledgeStore | None,
         knowledge_user_messages: Callable[[], list[str]],
         on_skills_changed: Callable[[], None],
+        schedule_origin: ScheduleOrigin | None = None,
     ) -> "ToolCoordinator":
         session_search_ctx = (
             SessionSearchContext(
@@ -66,6 +70,8 @@ class ToolCoordinator:
             knowledge_user_messages=knowledge_user_messages,
             session_search_ctx=session_search_ctx,
             on_skills_changed=on_skills_changed,
+            store=store,
+            schedule_origin=schedule_origin,
         )
         return cls(
             base_tools,
@@ -75,7 +81,9 @@ class ToolCoordinator:
             process_manager,
             registry,
             knowledge_store,
+            schedule_origin,
             session_search_ctx,
+            store,
         )
 
     def rebuild_registry(
@@ -98,6 +106,8 @@ class ToolCoordinator:
             knowledge_user_messages=knowledge_user_messages,
             session_search_ctx=self._session_search_ctx,
             on_skills_changed=on_skills_changed,
+            store=self._store,
+            schedule_origin=self.schedule_origin,
         )
 
     def resolve_tools(self) -> tuple[Tool, ...]:

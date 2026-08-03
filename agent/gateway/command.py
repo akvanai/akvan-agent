@@ -52,6 +52,7 @@ class CommandService:
             "/usage — show estimated context usage\n"
             "/compress — compact the current conversation\n"
             "/knowledge — review global knowledge\n"
+            "/schedule — list and manage scheduled jobs\n"
             "/settings — model, safety, and streaming\n"
             "/stop — stop the current response\n"
             "/help — show this help\n\n"
@@ -78,6 +79,9 @@ class CommandService:
             return False
         if command == "status":
             await self.send_status(chat_id)
+            return True
+        if command == "schedule":
+            await self.handle_schedule(chat_id, message.get_command_args().strip())
             return True
         if command in {"start", "help"}:
             await self.delivery.send(
@@ -169,6 +173,92 @@ class CommandService:
             f"Approvals: {approval.title()}\n"
             f"Streaming: {transport.title()}{cost_line}",
         )
+
+    async def handle_schedule(self, chat_id: str, args: str) -> None:
+        from agent.schedule.jobs import (
+            format_job_line,
+            list_jobs,
+            pause_job,
+            remove_job,
+            resume_job,
+        )
+        from agent.schedule.scheduler import run_job_now
+
+        parts = args.split(maxsplit=1)
+        action = parts[0].lower() if parts else ""
+        target = parts[1].strip() if len(parts) > 1 else ""
+
+        def help_text() -> str:
+            jobs = list_jobs(self.store, include_completed=False)
+            listing = "\n".join(format_job_line(job) for job in jobs) or "(none)"
+            return (
+                "Scheduled jobs (require a running gateway to fire):\n"
+                f"{listing}\n\n"
+                "Commands:\n"
+                "/schedule — list active jobs\n"
+                "/schedule pause <id-or-name>\n"
+                "/schedule resume <id-or-name>\n"
+                "/schedule run <id-or-name>\n"
+                "/schedule remove <id-or-name>\n\n"
+                "Create jobs by asking in chat (uses the schedule tool)."
+            )
+
+        try:
+            if action in {"", "list", "help"}:
+                await self.delivery.send(chat_id, help_text())
+                return
+            if not target:
+                await self.delivery.send(
+                    chat_id,
+                    f"Usage: /schedule {action} <id-or-name>\n\n{help_text()}",
+                )
+                return
+            if action == "pause":
+                job = pause_job(self.store, target)
+                await self.delivery.send(
+                    chat_id, f"Paused job {job.id} ({job.name}).",
+                )
+                return
+            if action == "resume":
+                job = resume_job(self.store, target)
+                await self.delivery.send(
+                    chat_id, f"Resumed job {job.id} ({job.name}).",
+                )
+                return
+            if action == "remove":
+                job = remove_job(self.store, target)
+                await self.delivery.send(
+                    chat_id, f"Removed job {job.id} ({job.name}).",
+                )
+                return
+            if action == "run":
+                loop = asyncio.get_running_loop()
+
+                def sync_send(cid: str, text: str) -> None:
+                    future = asyncio.run_coroutine_threadsafe(
+                        self.delivery.send(cid, text),
+                        loop,
+                    )
+                    future.result(timeout=120)
+
+                ok = await asyncio.to_thread(
+                    run_job_now,
+                    self.store,
+                    target,
+                    delivery_send=sync_send,
+                )
+                if ok:
+                    await self.delivery.send(chat_id, f"Ran job '{target}'.")
+                else:
+                    await self.delivery.send(
+                        chat_id,
+                        f"Job '{target}' run reported failure. "
+                        "Check ~/.akvan/schedule/output/.",
+                    )
+                return
+            await self.delivery.send(chat_id, help_text())
+        except ValueError as exc:
+            await self.delivery.send(chat_id, str(exc))
 
     async def send_settings(self, chat_id: str) -> None:
         prefs = self.chat_session.preferences(chat_id)

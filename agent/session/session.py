@@ -29,6 +29,7 @@ from agent.messages import (
 )
 from agent.prompts import PromptBuilder, PromptSnapshot
 from agent.providers.base import Provider
+from agent.schedule.jobs import ScheduleOrigin
 from agent.session.persistence import PersistenceCoordinator
 from agent.session.prompt import PromptCoordinator
 from agent.session.tooling import ToolCoordinator
@@ -82,6 +83,7 @@ class AgentSession:
         store: SessionStore | None | object = ...,
         session_id: str | None = None,
         session_source: str = "cli",
+        schedule_origin: ScheduleOrigin | None = None,
     ) -> "AgentSession":
         builder = prompt_builder or PromptBuilder()
         memory_config = load_memory_config(project_root=builder.project_root)
@@ -163,6 +165,7 @@ class AgentSession:
             knowledge_store=knowledge_store,
             knowledge_user_messages=_knowledge_user_messages,
             on_skills_changed=_skills_changed,
+            schedule_origin=schedule_origin,
         )
         tools = tooling.resolve_tools()
         snapshot = builder.build(

@@ -85,3 +85,9 @@ logging:
 #
 # vault:
 #   root_dir: ~/.akvan/vault  # agent media/files only; not for secrets
+
+# Scheduled agent jobs (require a running gateway to fire automatically)
+schedule:
+  enabled: true
+  tick_interval_seconds: 60   # gateway ticker interval
+  wrap_response: true         # wrap Telegram deliveries with job header/footer

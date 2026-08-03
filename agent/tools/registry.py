@@ -28,6 +28,9 @@ from agent.tools.browser_runtime.config import (
     is_banner_generation_configured,
     is_browser_configured,
 )
+from agent.schedule.config import is_schedule_enabled
+from agent.schedule.jobs import ScheduleOrigin
+from agent.storage.store import SessionStore
 
 
 class ToolRegistry:
@@ -90,6 +93,8 @@ def build_registry(
     knowledge_user_messages: Callable[[], list[str]] | None = None,
     session_search_ctx: SessionSearchContext | None = None,
     on_skills_changed: Callable[[], None] | None = None,
+    store: SessionStore | None = None,
+    schedule_origin: ScheduleOrigin | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
     registry.register_many(base_tools, toolset="core")
@@ -121,6 +126,13 @@ def build_registry(
     registry.register_many(
         build_session_search_tools(session_search_ctx), toolset="sessions"
     )
+    if is_schedule_enabled(project_root=project_root):
+        from agent.tools.schedule_tools import build_schedule_tools
+
+        registry.register_many(
+            build_schedule_tools(store, origin=schedule_origin),
+            toolset="schedule",
+        )
     if is_web_configured(project_root=project_root):
         from agent.tools.web.tools import build_web_tools
 

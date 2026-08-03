@@ -28,7 +28,7 @@ from agent.storage.permissions import (
     prepare_akvan_parent,
 )
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 SESSION_PAGE_SIZE = 15
 
 SCHEMA_SQL = """
@@ -155,6 +155,33 @@ CREATE TRIGGER messages_fts_update AFTER UPDATE ON messages BEGIN
 END;
 """
 
+SCHEMA_V6_SQL = """
+CREATE TABLE IF NOT EXISTS scheduled_jobs (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    schedule_kind TEXT NOT NULL,
+    schedule_expr TEXT NOT NULL,
+    schedule_display TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    state TEXT NOT NULL DEFAULT 'scheduled',
+    deliver TEXT NOT NULL DEFAULT 'local',
+    origin_platform TEXT,
+    origin_chat_id TEXT,
+    next_run_at REAL,
+    last_run_at REAL,
+    last_status TEXT,
+    last_error TEXT,
+    repeat_times INTEGER,
+    repeat_completed INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_due
+    ON scheduled_jobs(enabled, state, next_run_at);
+"""
+
 # --- Phase 3: usage and billing ---
 # ALTER TABLE sessions ADD COLUMN input_tokens INTEGER DEFAULT 0;
 # ALTER TABLE sessions ADD COLUMN output_tokens INTEGER DEFAULT 0;
@@ -250,6 +277,14 @@ class SessionStore:
                 self._conn.execute(
                     "UPDATE schema_version SET version = ?",
                     (5,),
+                )
+                self._conn.commit()
+                current = 5
+            if current < 6:
+                self._conn.executescript(SCHEMA_V6_SQL)
+                self._conn.execute(
+                    "UPDATE schema_version SET version = ?",
+                    (6,),
                 )
                 self._conn.commit()
 
@@ -865,6 +900,121 @@ class SessionStore:
                WHERE id = ? AND title IS NULL""",
             (title, session_id),
         )
+
+    def insert_scheduled_job(self, row: dict[str, Any]) -> None:
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO scheduled_jobs (
+                       id, name, prompt, schedule_kind, schedule_expr,
+                       schedule_display, enabled, state, deliver,
+                       origin_platform, origin_chat_id, next_run_at,
+                       last_run_at, last_status, last_error, repeat_times,
+                       repeat_completed, created_at, updated_at
+                   ) VALUES (
+                       :id, :name, :prompt, :schedule_kind, :schedule_expr,
+                       :schedule_display, :enabled, :state, :deliver,
+                       :origin_platform, :origin_chat_id, :next_run_at,
+                       :last_run_at, :last_status, :last_error, :repeat_times,
+                       :repeat_completed, :created_at, :updated_at
+                   )""",
+                row,
+            )
+            self._conn.commit()
+
+    def list_scheduled_jobs(
+        self, *, include_completed: bool = True
+    ) -> list[sqlite3.Row]:
+        with self._lock:
+            if include_completed:
+                rows = self._conn.execute(
+                    """SELECT * FROM scheduled_jobs
+                       ORDER BY created_at DESC"""
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """SELECT * FROM scheduled_jobs
+                       WHERE state != 'completed'
+                       ORDER BY created_at DESC"""
+                ).fetchall()
+            return list(rows)
+
+    def get_scheduled_job(self, job_ref: str) -> sqlite3.Row | None:
+        ref = job_ref.strip()
+        if not ref:
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM scheduled_jobs WHERE id = ?",
+                (ref,),
+            ).fetchone()
+            if row is not None:
+                return row
+            matches = self._conn.execute(
+                """SELECT * FROM scheduled_jobs
+                   WHERE lower(name) = lower(?)""",
+                (ref,),
+            ).fetchall()
+            if len(matches) == 1:
+                return matches[0]
+            return None
+
+    def update_scheduled_job(self, job_id: str, fields: dict[str, Any]) -> None:
+        if not fields:
+            return
+        columns = ", ".join(f"{key} = ?" for key in fields)
+        values = list(fields.values()) + [job_id]
+        with self._lock:
+            self._conn.execute(
+                f"UPDATE scheduled_jobs SET {columns} WHERE id = ?",
+                values,
+            )
+            self._conn.commit()
+
+    def delete_scheduled_job(self, job_id: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM scheduled_jobs WHERE id = ?",
+                (job_id,),
+            )
+            self._conn.commit()
+
+    def claim_due_scheduled_jobs(self, now_ts: float) -> list[sqlite3.Row]:
+        """Atomically claim due jobs and advance next_run_at (at-most-once)."""
+        from agent.schedule.jobs import compute_next_run_at
+
+        with self._lock:
+            due = self._conn.execute(
+                """SELECT * FROM scheduled_jobs
+                   WHERE enabled = 1
+                     AND state = 'scheduled'
+                     AND next_run_at IS NOT NULL
+                     AND next_run_at <= ?
+                   ORDER BY next_run_at ASC""",
+                (now_ts,),
+            ).fetchall()
+            claimed: list[sqlite3.Row] = []
+            for row in due:
+                next_run = compute_next_run_at(
+                    kind=str(row["schedule_kind"]),
+                    expr=str(row["schedule_expr"]),
+                    from_time=now_ts,
+                )
+                self._conn.execute(
+                    """UPDATE scheduled_jobs
+                       SET state = 'running',
+                           next_run_at = ?,
+                           updated_at = ?
+                       WHERE id = ?""",
+                    (next_run, now_ts, row["id"]),
+                )
+                updated = self._conn.execute(
+                    "SELECT * FROM scheduled_jobs WHERE id = ?",
+                    (row["id"],),
+                ).fetchone()
+                if updated is not None:
+                    claimed.append(updated)
+            self._conn.commit()
+            return claimed
 
 
 def open_session_store(db_path: Path | None = None) -> SessionStore | None:

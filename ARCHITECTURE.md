@@ -48,8 +48,11 @@ Provider implementations ───→ Provider contract
   review, and memory configuration.
 - `knowledge/` owns private global OKF concepts, search, proposals, validation,
   generated indexes/logs, and the dedicated conversation curator.
-- `storage/` persists session metadata and message history to SQLite
-  (`~/.akvan/state.db`), including FTS5 full-text search for `session_search`.
+- `schedule/` owns scheduled job storage/parsing, the gateway ticker, and
+  isolated job execution with local/Telegram delivery. Jobs fire only while a
+  gateway is running (or via `akvan schedule tick`).
+- `storage/` persists session metadata, message history, and scheduled jobs to
+  SQLite (`~/.akvan/state.db`), including FTS5 full-text search for `session_search`.
 - `gateway/integrations/<id>/` owns each transport's adapter, configuration,
   dependency checks, authentication policy, and native rendering.
 - `cli.py` is intentionally only the console-script entry point.

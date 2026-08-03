@@ -27,6 +27,7 @@ from agent.ui.setup import needs_provider_setup, run_model_setup
 from agent.ui.settings_setup import run_settings_setup
 from agent.ui.gateway_setup import run_gateway, run_gateway_restart
 from agent.ui.logs import run_logs_with_args
+from agent.ui.schedule_cli import run_schedule_cli
 from agent.ui.tools_setup import run_tools_setup
 from agent.ui.uninstall import run_uninstall
 from agent.skills.curator import (
@@ -157,6 +158,36 @@ def build_parser() -> argparse.ArgumentParser:
         "tools",
         help="Configure web search and extract providers.",
     )
+    schedule = commands.add_parser(
+        "schedule",
+        help="Create and manage scheduled agent jobs.",
+    )
+    schedule_sub = schedule.add_subparsers(dest="schedule_command")
+    schedule_sub.add_parser("list", help="List scheduled jobs.")
+    create_job = schedule_sub.add_parser("create", help="Create a scheduled job.")
+    create_job.add_argument(
+        "schedule",
+        help="Schedule expression (30m, every 2h, '0 9 * * *', ISO time).",
+    )
+    create_job.add_argument("prompt", help="Self-contained task prompt.")
+    create_job.add_argument("--name", default=None, help="Optional job name.")
+    create_job.add_argument(
+        "--deliver",
+        default=None,
+        help="Delivery target: local, origin, or telegram:<chat_id>.",
+    )
+    for action, help_text in (
+        ("pause", "Pause a scheduled job."),
+        ("resume", "Resume a paused job."),
+        ("run", "Run a job immediately."),
+        ("remove", "Delete a scheduled job."),
+    ):
+        action_parser = schedule_sub.add_parser(action, help=help_text)
+        action_parser.add_argument("job_ref", help="Job id or unique name.")
+    schedule_sub.add_parser(
+        "tick",
+        help="Run due jobs once (also runs automatically in the gateway).",
+    )
     uninstall = commands.add_parser(
         "uninstall",
         help="Remove Akvan Agent; use --purge to delete all ~/.akvan data.",
@@ -255,6 +286,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "tools":
         return run_tools_setup(console)
+
+    if args.command == "schedule":
+        return run_schedule_cli(console, args)
 
     if args.command == "uninstall":
         return run_uninstall(purge=args.purge, yes=args.yes)
