@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from agent.config import akvan_home
+from agent.config import akvan_home, DEFAULT_MAX_ITERATIONS
 from agent.context import (
     CompactionResult,
     ContextBudget,
@@ -31,7 +31,6 @@ from agent.providers.base import Provider, ProviderError
 from agent.tools.approval import ApprovalManager, ApprovalRequirement
 from agent.tools.base import Tool, ToolResult
 
-DEFAULT_MAX_ITERATIONS = 100
 MAX_CONTEXT_RECOVERY_ATTEMPTS = 3
 logger = logging.getLogger(__name__)
 

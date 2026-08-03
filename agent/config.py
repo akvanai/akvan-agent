@@ -24,6 +24,10 @@ SUPPORTED_CODEX_AUTH_MODES = {"api-key", "cli"}
 SUPPORTED_DEEPSEEK_THINKING_MODES = {"enabled", "disabled"}
 SUPPORTED_DEEPSEEK_REASONING_EFFORTS = {"low", "medium", "high", "max"}
 SUPPORTED_VISION_MODES = {"auto", "native", "aux", "off"}
+SUPPORTED_APPROVAL_MODES = {"ask", "deny", "off"}
+DEFAULT_MAX_ITERATIONS = 100
+DEFAULT_TERMINAL_TIMEOUT = 120
+DEFAULT_APPROVAL_TIMEOUT = 60
 
 
 def akvan_home() -> Path:
@@ -45,8 +49,10 @@ class Settings:
     model: str
     openrouter_api_key: str = ""
     approval_mode: str = "ask"
-    approval_timeout: int = 60
-    terminal_timeout: int = 120
+    approval_timeout: int = DEFAULT_APPROVAL_TIMEOUT
+    terminal_timeout: int = DEFAULT_TERMINAL_TIMEOUT
+    max_iterations: int = DEFAULT_MAX_ITERATIONS
+    yolo: bool = False
     openai_api_key: str = ""
     codex_auth_mode: str = DEFAULT_CODEX_AUTH_MODE
     codex_cli_auth_path: str = ""
@@ -65,6 +71,66 @@ class Settings:
     akvan_backend_url: str = DEFAULT_AKVAN_BACKEND_URL
 
 
+def _ensure_env_file(root: Path) -> Path:
+    from agent.storage.permissions import (
+        ensure_private_file,
+        harden_akvan_home,
+        is_under_akvan_home,
+    )
+
+    env_path = root / ".env"
+    if is_under_akvan_home(root):
+        harden_akvan_home(root)
+    else:
+        root.mkdir(parents=True, exist_ok=True)
+    if not env_path.exists():
+        env_path.touch(mode=0o600)
+    ensure_private_file(env_path)
+    return env_path
+
+
+def save_agent_settings(
+    *,
+    max_iterations: int,
+    approval_mode: str,
+    terminal_timeout: int,
+    yolo: bool,
+    project_root: Path | None = None,
+) -> Path:
+    """Persist runtime agent settings to ~/.akvan/.env (or project_root/.env)."""
+
+    from agent.storage.permissions import ensure_private_file
+
+    root = project_root or akvan_home()
+    env_path = _ensure_env_file(root)
+    set_key(
+        str(env_path),
+        "AKVAN_MAX_ITERATIONS",
+        str(max_iterations),
+        quote_mode="never",
+    )
+    set_key(
+        str(env_path),
+        "AKVAN_APPROVAL_MODE",
+        approval_mode,
+        quote_mode="never",
+    )
+    set_key(
+        str(env_path),
+        "AKVAN_TERMINAL_TIMEOUT",
+        str(terminal_timeout),
+        quote_mode="never",
+    )
+    set_key(
+        str(env_path),
+        "AKVAN_YOLO",
+        "true" if yolo else "false",
+        quote_mode="never",
+    )
+    ensure_private_file(env_path)
+    return env_path
+
+
 def save_settings(
     *,
     provider: str,
@@ -78,20 +144,10 @@ def save_settings(
     akvan_backend_url: str = DEFAULT_AKVAN_BACKEND_URL,
     project_root: Path | None = None,
 ) -> Path:
-    from agent.storage.permissions import (
-        ensure_private_file,
-        harden_akvan_home,
-        is_under_akvan_home,
-    )
+    from agent.storage.permissions import ensure_private_file
 
     root = project_root or akvan_home()
-    env_path = root / ".env"
-    if is_under_akvan_home(root):
-        harden_akvan_home(root)
-    else:
-        root.mkdir(parents=True, exist_ok=True)
-    if not env_path.exists():
-        env_path.touch(mode=0o600)
+    env_path = _ensure_env_file(root)
     set_key(str(env_path), "AKVAN_PROVIDER", provider, quote_mode="never")
     set_key(str(env_path), "AKVAN_MODEL", model, quote_mode="never")
     if openrouter_api_key:
@@ -155,6 +211,24 @@ def _env_bool_optional(
     return None
 
 
+def _env_bool(dotenv: dict[str, str | None], key: str, default: bool = False) -> bool:
+    raw = _env_value(dotenv, key)
+    if not raw:
+        return default
+    parsed = _env_bool_optional(dotenv, key)
+    if parsed is None:
+        raise ValueError(f"{key} must be true or false")
+    return parsed
+
+
+def _env_int(dotenv: dict[str, str | None], key: str, default: int) -> int:
+    raw = _env_value(dotenv, key, str(default)) or str(default)
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{key} must be an integer") from exc
+
+
 def load_setup_settings(*, project_root: Path | None = None) -> Settings:
     global_root = akvan_home()
     root = project_root or Path.cwd()
@@ -186,8 +260,16 @@ def load_setup_settings(*, project_root: Path | None = None) -> Settings:
         deepseek_reasoning_effort=_env_value(dotenv, "AKVAN_DEEPSEEK_REASONING_EFFORT"),
         deepseek_base_url=_env_value(dotenv, "DEEPSEEK_BASE_URL"),
         approval_mode=_env_value(dotenv, "AKVAN_APPROVAL_MODE", "ask").lower(),
-        approval_timeout=int(_env_value(dotenv, "AKVAN_APPROVAL_TIMEOUT", "60")),
-        terminal_timeout=int(_env_value(dotenv, "AKVAN_TERMINAL_TIMEOUT", "120")),
+        approval_timeout=_env_int(
+            dotenv, "AKVAN_APPROVAL_TIMEOUT", DEFAULT_APPROVAL_TIMEOUT
+        ),
+        terminal_timeout=_env_int(
+            dotenv, "AKVAN_TERMINAL_TIMEOUT", DEFAULT_TERMINAL_TIMEOUT
+        ),
+        max_iterations=_env_int(
+            dotenv, "AKVAN_MAX_ITERATIONS", DEFAULT_MAX_ITERATIONS
+        ),
+        yolo=_env_bool(dotenv, "AKVAN_YOLO", False),
         web_search_backend=_env_value(dotenv, "AKVAN_WEB_SEARCH_BACKEND"),
         web_extract_backend=_env_value(dotenv, "AKVAN_WEB_EXTRACT_BACKEND"),
         searxng_url=_env_value(dotenv, "SEARXNG_URL"),
@@ -261,12 +343,14 @@ def load_settings(
     akvan_api_key = current.akvan_api_key
     akvan_backend_url = current.akvan_backend_url
 
-    if current.approval_mode not in {"ask", "deny", "off"}:
+    if current.approval_mode not in SUPPORTED_APPROVAL_MODES:
         raise ValueError("AKVAN_APPROVAL_MODE must be one of: ask, deny, off")
     if current.approval_timeout < 1:
         raise ValueError("AKVAN_APPROVAL_TIMEOUT must be at least 1")
     if not 1 <= current.terminal_timeout <= 600:
         raise ValueError("AKVAN_TERMINAL_TIMEOUT must be between 1 and 600")
+    if current.max_iterations < 1:
+        raise ValueError("AKVAN_MAX_ITERATIONS must be at least 1")
     if current.vision_mode not in SUPPORTED_VISION_MODES:
         raise ValueError(
             "AKVAN_VISION_MODE must be one of: "
@@ -346,6 +430,8 @@ def load_settings(
         approval_mode=current.approval_mode,
         approval_timeout=current.approval_timeout,
         terminal_timeout=current.terminal_timeout,
+        max_iterations=current.max_iterations,
+        yolo=current.yolo,
         web_search_backend=current.web_search_backend,
         web_extract_backend=current.web_extract_backend,
         searxng_url=current.searxng_url,

@@ -6,12 +6,26 @@ from pathlib import Path
 
 import pytest
 
-from agent.config import DEFAULT_MODEL, load_settings, save_settings
+from agent.config import (
+    DEFAULT_MAX_ITERATIONS,
+    DEFAULT_MODEL,
+    load_settings,
+    save_agent_settings,
+    save_settings,
+)
 
 
 @pytest.fixture(autouse=True)
 def isolate_akvan_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("AKVAN_HOME", str(tmp_path / "home" / ".akvan"))
+    for key in (
+        "AKVAN_MAX_ITERATIONS",
+        "AKVAN_YOLO",
+        "AKVAN_APPROVAL_MODE",
+        "AKVAN_TERMINAL_TIMEOUT",
+        "AKVAN_APPROVAL_TIMEOUT",
+    ):
+        monkeypatch.delenv(key, raising=False)
 
 
 def test_env_var_wins_over_dotenv(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -199,4 +213,79 @@ def test_save_settings_writes_deepseek_key(tmp_path: Path) -> None:
     assert "AKVAN_PROVIDER=deepseek" in content
     assert "AKVAN_MODEL=deepseek-chat" in content
     assert "DEEPSEEK_API_KEY=deepseek-key" in content
+
+
+def test_agent_settings_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text(
+        "OPENROUTER_API_KEY=dotenv-key\n",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(project_root=tmp_path, prompt_for_missing_key=False)
+
+    assert settings.max_iterations == DEFAULT_MAX_ITERATIONS
+    assert settings.yolo is False
+    assert settings.approval_mode == "ask"
+    assert settings.terminal_timeout == 120
+
+
+def test_agent_settings_load_from_dotenv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / ".env").write_text(
+        "OPENROUTER_API_KEY=dotenv-key\n"
+        "AKVAN_MAX_ITERATIONS=12\n"
+        "AKVAN_APPROVAL_MODE=deny\n"
+        "AKVAN_TERMINAL_TIMEOUT=45\n"
+        "AKVAN_YOLO=true\n",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(project_root=tmp_path, prompt_for_missing_key=False)
+
+    assert settings.max_iterations == 12
+    assert settings.approval_mode == "deny"
+    assert settings.terminal_timeout == 45
+    assert settings.yolo is True
+
+
+def test_save_agent_settings_writes_runtime_keys(tmp_path: Path) -> None:
+    env_path = save_agent_settings(
+        max_iterations=25,
+        approval_mode="off",
+        terminal_timeout=90,
+        yolo=True,
+        project_root=tmp_path,
+    )
+
+    content = env_path.read_text(encoding="utf-8")
+    assert "AKVAN_MAX_ITERATIONS=25" in content
+    assert "AKVAN_APPROVAL_MODE=off" in content
+    assert "AKVAN_TERMINAL_TIMEOUT=90" in content
+    assert "AKVAN_YOLO=true" in content
+    assert "AKVAN_PROVIDER=" not in content
+
+
+def test_invalid_max_iterations_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / ".env").write_text(
+        "OPENROUTER_API_KEY=dotenv-key\n"
+        "AKVAN_MAX_ITERATIONS=0\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="AKVAN_MAX_ITERATIONS"):
+        load_settings(project_root=tmp_path, prompt_for_missing_key=False)
+
+
+def test_invalid_yolo_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text(
+        "OPENROUTER_API_KEY=dotenv-key\n"
+        "AKVAN_YOLO=maybe\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="AKVAN_YOLO"):
+        load_settings(project_root=tmp_path, prompt_for_missing_key=False)
 

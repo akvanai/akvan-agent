@@ -7,7 +7,7 @@ import argparse
 from rich.console import Console
 
 from agent.agent import AgentLoopError, DEFAULT_MAX_ITERATIONS
-from agent.config import load_settings, load_setup_settings
+from agent.config import Settings, load_settings, load_setup_settings
 from agent.logging_setup import setup_logging
 from agent.providers import build_provider
 from agent.providers.base import ProviderError
@@ -24,6 +24,7 @@ from agent.ui.rendering import (
     render_user_message,
 )
 from agent.ui.setup import needs_provider_setup, run_model_setup
+from agent.ui.settings_setup import run_settings_setup
 from agent.ui.gateway_setup import run_gateway, run_gateway_restart
 from agent.ui.logs import run_logs_with_args
 from agent.ui.tools_setup import run_tools_setup
@@ -38,13 +39,31 @@ from agent.skills.sync import reset_bundled_skill, sync_bundled_skills
 from agent.skills.usage import restore_skill
 
 
+def resolve_launch_options(
+    args: argparse.Namespace,
+    settings: Settings,
+) -> tuple[int, bool]:
+    """Resolve max_iterations and yolo from CLI flags with settings/.env defaults."""
+
+    max_iterations = (
+        args.max_iterations
+        if getattr(args, "max_iterations", None) is not None
+        else settings.max_iterations
+    )
+    yolo = bool(getattr(args, "yolo", False) or settings.yolo)
+    return max_iterations, yolo
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the Akvan Agent CLI chat loop.")
     parser.add_argument(
         "--max-iterations",
         type=int,
-        default=DEFAULT_MAX_ITERATIONS,
-        help=f"Maximum agent iterations per user turn. Defaults to {DEFAULT_MAX_ITERATIONS}.",
+        default=None,
+        help=(
+            "Maximum agent iterations per user turn. "
+            f"Defaults to AKVAN_MAX_ITERATIONS or {DEFAULT_MAX_ITERATIONS}."
+        ),
     )
     parser.add_argument(
         "--yolo",
@@ -60,6 +79,10 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser(
         "model",
         help="Choose or reconfigure the model provider and model.",
+    )
+    commands.add_parser(
+        "settings",
+        help="Configure max iterations, approvals, terminal timeout, and YOLO.",
     )
     skills = commands.add_parser("skills", help="Manage Akvan skills.")
     skills_sub = skills.add_subparsers(dest="skills_command", required=True)
@@ -114,8 +137,11 @@ def build_parser() -> argparse.ArgumentParser:
     gateway.add_argument(
         "--max-iterations",
         type=int,
-        default=DEFAULT_MAX_ITERATIONS,
-        help=f"Maximum agent iterations per user turn. Defaults to {DEFAULT_MAX_ITERATIONS}.",
+        default=None,
+        help=(
+            "Maximum agent iterations per user turn. "
+            f"Defaults to AKVAN_MAX_ITERATIONS or {DEFAULT_MAX_ITERATIONS}."
+        ),
     )
     gateway_sub = gateway.add_subparsers(dest="gateway_command")
     restart_parser = gateway_sub.add_parser(
@@ -209,17 +235,22 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "model":
         return run_model_setup(console)
 
+    if args.command == "settings":
+        return run_settings_setup(console)
+
     if args.command == "gateway":
+        launch_settings = load_setup_settings()
+        max_iterations, yolo = resolve_launch_options(args, launch_settings)
         if getattr(args, "gateway_command", None) == "restart":
             return run_gateway_restart(
-                yolo=args.yolo,
-                max_iterations=args.max_iterations,
+                yolo=yolo,
+                max_iterations=max_iterations,
                 quiet=getattr(args, "quiet", False),
             )
         return run_gateway(
             console,
-            yolo=args.yolo,
-            max_iterations=args.max_iterations,
+            yolo=yolo,
+            max_iterations=max_iterations,
         )
 
     if args.command == "tools":
@@ -282,15 +313,16 @@ def main(argv: list[str] | None = None) -> int:
     try:
         settings = load_settings()
         model = args.model or settings.model
+        max_iterations, yolo = resolve_launch_options(args, settings)
         provider = build_provider(settings)
         session = AgentSession.create(
             provider=provider,
             model=model,
-            max_iterations=args.max_iterations,
+            max_iterations=max_iterations,
             approval_mode=settings.approval_mode,
             approval_timeout=settings.approval_timeout,
             terminal_timeout=settings.terminal_timeout,
-            yolo=args.yolo,
+            yolo=yolo,
         )
     except ValueError as exc:
         print_error(console, f"[bold #ff0000]Configuration error:[/] {exc}")
@@ -304,7 +336,7 @@ def main(argv: list[str] | None = None) -> int:
             console,
             provider_name=provider.name,
             model=model,
-            max_iterations=args.max_iterations,
+            max_iterations=max_iterations,
             tools=session.loop.tools,
             skills=tuple(session.prompt.snapshot.skills.skills.values()),
             cwd=session.prompt.builder.cwd,
@@ -315,7 +347,7 @@ def main(argv: list[str] | None = None) -> int:
             console,
             provider_name=provider.name,
             model=model,
-            max_iterations=args.max_iterations,
+            max_iterations=max_iterations,
             tools=session.loop.tools,
             skills=tuple(session.prompt.snapshot.skills.skills.values()),
         )
@@ -335,7 +367,7 @@ def main(argv: list[str] | None = None) -> int:
                     console,
                     model=model,
                     provider_name=provider.name,
-                    max_iterations=args.max_iterations,
+                    max_iterations=max_iterations,
                     transcript=transcript,
                     session=session,
                 ).strip()

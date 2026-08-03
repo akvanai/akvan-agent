@@ -192,7 +192,14 @@ to deny. If no choice is made before the configured timeout, Akvan denies the
 operation and lets the model choose a safer next step.
 
 Configure approvals with `AKVAN_APPROVAL_MODE`, `AKVAN_APPROVAL_TIMEOUT`, and
-`AKVAN_TERMINAL_TIMEOUT`:
+`AKVAN_TERMINAL_TIMEOUT`, or run the interactive wizard:
+
+```bash
+akvan settings
+```
+
+That wizard also persists `AKVAN_MAX_ITERATIONS` and `AKVAN_YOLO` (launch default
+equivalent to `--yolo`) in `~/.akvan/.env`.
 
 | Mode | Behavior |
 |------|----------|
@@ -414,6 +421,7 @@ Use `/skills` to list skills by category, `/<skill-name> <request>` to activate 
 |---------|---------|
 | `akvan` | Interactive chat (default) |
 | `akvan model` | Provider/model setup wizard |
+| `akvan settings` | Max iterations, approval mode, terminal timeout, YOLO |
 | `akvan tools` | Optional web and browser-backed tools setup |
 | `akvan gateway` | Gateway manager |
 | `akvan gateway restart` | Restart running gateways to pick up code changes |
@@ -431,7 +439,7 @@ Use `/skills` to list skills by category, `/<skill-name> <request>` to activate 
 | Flag | Applies to | Purpose |
 |------|------------|---------|
 | `--yolo` | `akvan`, `akvan gateway` | Skip ordinary approvals; catastrophic commands remain blocked |
-| `--max-iterations N` | `akvan`, `akvan gateway` | Max agent iterations per user turn (default: 100) |
+| `--max-iterations N` | `akvan`, `akvan gateway` | Max agent iterations per user turn (default: `AKVAN_MAX_ITERATIONS` or 100) |
 | `--model MODEL` | `akvan` | Override `AKVAN_MODEL` for this session |
 
 ### In-session slash commands
