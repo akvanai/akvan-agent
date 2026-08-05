@@ -17,7 +17,7 @@ Install Akvan with the website script or from source:
 From our website (recommended):
 
 ```bash
-curl -fsSL https://agent.akvan.app/install.sh | sh
+curl -fsSL https://agent.akvan.ai/install.sh | sh
 ```
 
 From source:
@@ -74,7 +74,7 @@ Configure the active provider with `akvan model` or in `~/.akvan/.env`
 - `openrouter` — uses `OPENROUTER_API_KEY`, loads the live OpenRouter model catalog, and uses the Chat Completions endpoint (`/chat/completions`).
 - `openai-codex` — defaults to Codex CLI session discovery and can alternatively use `OPENAI_API_KEY`.
 - `deepseek` — uses `DEEPSEEK_API_KEY` against the native DeepSeek API (`https://api.deepseek.com/v1`), with V4 thinking-mode support and `reasoning_content` replay for tool calls.
-- `akvan` — sign in with OTP via `akvan model`, uses `AKVAN_API_KEY` and `AKVAN_BACKEND_URL` (default `https://agent.akvan.app`) against the Akvan backend proxy; billing uses Akvan plan credits instead of a direct provider key.
+- `akvan` — sign in with OTP via `akvan model`, uses `AKVAN_API_KEY` and `AKVAN_BACKEND_URL` (default `https://agent.akvan.ai`) against the Akvan backend proxy; billing uses Akvan plan credits instead of a direct provider key.
 
 Akvan provider setup:
 
@@ -87,7 +87,7 @@ Or set manually in `~/.akvan/.env`:
 ```bash
 AKVAN_PROVIDER=akvan
 AKVAN_API_KEY=your_akvan_api_key
-AKVAN_BACKEND_URL=https://agent.akvan.app
+AKVAN_BACKEND_URL=https://agent.akvan.ai
 AKVAN_MODEL=openai/gpt-4o-mini
 ```
 

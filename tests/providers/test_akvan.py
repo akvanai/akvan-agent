@@ -54,7 +54,7 @@ def test_akvan_billing_error_includes_message() -> None:
                 402,
                 json={
                     "detail": "insufficient_credit",
-                    "message": "Top up at https://akvan.app/dashboard/credits",
+                    "message": "Top up at https://akvan.ai/dashboard/credits",
                 },
             )
         )

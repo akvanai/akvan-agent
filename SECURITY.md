@@ -5,7 +5,7 @@
 If you discover a security vulnerability in Akvan Agent, please **do not** open a
 public issue. Instead, report it privately:
 
-- **Email**: agent@akvan.app
+- **Email**: agent@akvan.ai
 - **Subject**: "Security: [brief description]"
 
 You should receive a response within 48 hours. We take all reports seriously and

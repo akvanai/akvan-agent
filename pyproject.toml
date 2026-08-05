@@ -10,7 +10,7 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
-  { name = "arash-dn", email = "agent@akvan.app" },
+  { name = "arash-dn", email = "agent@akvan.ai" },
 ]
 keywords = [
   "ai",

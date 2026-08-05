@@ -33,7 +33,7 @@ Examples of unacceptable behavior:
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the project maintainer at agent@akvan.app. All complaints
+reported to the project maintainer at agent@akvan.ai. All complaints
 will be reviewed and investigated promptly and fairly.
 
 ## Attribution

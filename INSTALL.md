@@ -13,7 +13,7 @@ Install Akvan with the website script or from a source checkout.
 From our website (recommended):
 
 ```bash
-curl -fsSL https://agent.akvan.app/install.sh | sh
+curl -fsSL https://agent.akvan.ai/install.sh | sh
 ```
 
 From source (clone the repository, then run the installer from that tree):
